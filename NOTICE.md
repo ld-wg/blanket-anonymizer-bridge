@@ -1,0 +1,95 @@
+# NOTICE — third-party provenance and compliance flags
+
+This repository's own purpose is exactly to isolate the following
+third-party code/models from `lose-the-faces-keep-the-lesson`'s own
+process — see that project's `src/pipeline/phase2_generate/models/blanket/NOTICE.md`
+for the full architectural reasoning. This file covers what's specific to
+*this* repo: the actual provenance of what's vendored/depended on here.
+
+## Provenance — BLANKET
+
+- **Source repo:** https://github.com/ctu-vras/blanket-infant-face-anonym
+- **License: GPL-3.0.**
+- **Vendored as a git submodule** at `vendor/blanket-infant-face-anonym/`,
+  pinned to commit `84245d76dc7dc1cc59c5b356f1530346d422b922` (`master`
+  HEAD at fetch time, 2026-09-24, committed 2025-12-17 — the repo's own
+  README's "Dec 2025: Cleaner version of the code available" release).
+- **Paper:** Hadera, Čech, Purkrabek, Hoffmann, *BLANKET: Anonymizing
+  Faces in Infant Video Recordings*, IEEE ICDL 2025, pp. 1–8.
+  arXiv: 2512.15542.
+
+## Provenance — FaceFusion (vendored inside BLANKET's own repo)
+
+- **Source repo:** https://github.com/facefusion/facefusion
+- **License: OpenRAIL-AS** (a "responsible AI license" with real
+  use-restriction clauses — read `vendor/blanket-infant-face-anonym/external/facefusion/LICENSE.md`
+  directly, don't just cite the name).
+- **Copyright:** (c) 2025 Henry Ruhs.
+- Included as a full copy inside BLANKET's own repo
+  (`external/facefusion/`), not a submodule of BLANKET's — this repo
+  depends on it transitively, through the BLANKET submodule, without
+  modifying it.
+
+## Compliance flag 1 — GPL-3.0 scope of this repo
+
+This repo is licensed GPL-3.0 because `identity_server.py`/`swap_server.py`
+import BLANKET's own GPL-3.0 code directly (an in-process import, the real
+combination GPL-3.0's copyleft is about) — unlike
+`lose-the-faces-keep-the-lesson`, which only ever spawns this repo's
+scripts as separate OS processes over a Unix socket. That process boundary
+is a widely-used practice for keeping a GPL dependency's copyleft from
+propagating into a differently-licensed or unlicensed calling project, but
+**it is not a legal certainty** — the FSF's own guidance on this depends on
+how tightly coupled the communication is. **This is not legal advice.**
+Get real compliance/legal sign-off before any use beyond a personal or
+academic research context.
+
+## Compliance flag 2 — `inswapper_128` provenance
+
+`swap_server.py` uses FaceFusion's `inswapper_128` face-swap model
+(BLANKET's own configured default — see `facefusion_parameters.yaml` in
+the submodule). This checkpoint has a well-known, unresolved provenance/
+distribution controversy: the original author restricted official
+redistribution after misuse concerns (non-consensual deepfakes), and its
+training data provenance was never publicly disclosed. Community mirrors
+(including FaceFusion's own hosting/download infrastructure) continue to
+redistribute it, but its licensing/distribution status remains disputed.
+This is inherited from BLANKET/FaceFusion, not introduced here, but
+flagged in full because this repo is choosing to depend on it. Needs its
+own compliance/ethics review before any use beyond personal/academic
+research.
+
+## Compliance flag 3 — FaceFusion's OpenRAIL-AS use restrictions
+
+Read `vendor/blanket-infant-face-anonym/external/facefusion/LICENSE.md`'s
+actual clauses before relying on this bridge for anything beyond the
+anonymization/privacy-protection research purpose it exists for. OpenRAIL
+licenses carry real behavioral-use restrictions, not just attribution
+requirements — don't treat the license name as a formality.
+
+## Known open risks (not yet resolved empirically)
+
+- **`requirements-swap.txt` deliberately pins `onnxruntime-gpu<1.21`**,
+  older than FaceFusion's own vendored `requirements.txt` (`onnxruntime==1.23.2`,
+  and that one's CPU-only anyway) — chosen to match
+  `lose-the-faces-keep-the-lesson`'s own proven-working CUDA-12.5-ceiling
+  range on serra1, NOT verified yet against FaceFusion's actual code at
+  this specific version. First real thing to check once `.venv-swap` is
+  installed and `swap_server.py` is actually run.
+- **`requirements-swap.txt` excludes `gradio`/`gradio-rangeslider`**
+  (FaceFusion's own UI-only dependencies) — not verified whether any
+  core module this bridge imports (`state_manager`, `face_analyser`,
+  `face_swapper`, `face_enhancer`) eagerly imports UI code at module load
+  time. If the first real server boot raises `ImportError` for gradio,
+  add it back — that's an expected, cheap fix, not a sign of a design
+  problem.
+- **Python ≥3.10 is required** (BLANKET's own `pyproject.toml`/`setup.py`
+  both declare the looser `>=3.9`, but its vendored FaceFusion hard-checks
+  `sys.version_info < (3, 10)` at runtime) — `setup.sh` defaults to
+  `python3.12` to stay well clear of this.
+
+## Calibration / setup log
+
+Empty as of repo creation — entries go here once real installs/runs have
+happened on serra1, dated, same discipline as the calling project's own
+NOTICE.md files (a real, tested finding, not a guess).

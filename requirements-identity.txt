@@ -1,0 +1,26 @@
+# Hand-picked subset of BLANKET's own declared dependencies
+# (blanket-infant-face-anonym/pyproject.toml), covering only what
+# identity_server.py's real import path actually needs: torch/diffusers for
+# StableDiffusionAnonymizer (SDXL + 2 ControlNets + refiner),
+# ultralytics/spiga for the face+landmark detection step, controlnet-aux for
+# the openpose preprocessor. Deliberately EXCLUDES onnx/onnxruntime(-gpu)
+# (only FaceSwapper's own path needs those) and deepface (verified unused
+# by this call path — see lose-the-faces-keep-the-lesson's
+# models/blanket/NOTICE.md; it's only imported by FaceFusion's deep_swapper
+# processor, which this integration never calls).
+#
+# Kept intentionally close to BLANKET's own version floors rather than
+# re-deriving our own — these are their tested minimums, not guesses.
+torch>=2.0.0
+torchvision>=0.15.0
+diffusers>=0.25.0
+transformers>=4.35.0
+accelerate>=0.25.0
+pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<3.0
+controlnet-aux>=0.0.7
+ultralytics>=8.0.0
+spiga @ git+https://github.com/andresprados/SPIGA.git
+pyyaml>=6.0
+scipy>=1.10.0

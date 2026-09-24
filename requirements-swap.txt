@@ -1,0 +1,36 @@
+# Hand-picked subset covering only what swap_server.py's real import path
+# needs: FaceFusionDirectAnonymizer's own face_swapper/face_enhancer
+# processors (never deep_swapper — see requirements-identity.txt's comment;
+# deepface/TensorFlow are excluded from BOTH venvs on purpose). No
+# torch/diffusers here — the swap stage is entirely onnxruntime-based.
+opencv-python>=4.8.0
+numpy>=1.24.0,<3.0
+pyyaml>=6.0
+tqdm>=4.65.0
+scipy>=1.10.0
+psutil>=5.9.0
+
+# Deliberately NOT FaceFusion's own vendored requirements.txt pin
+# (onnxruntime==1.23.2, a CPU-only build with no CUDA option in that exact
+# file — the real onnxruntime-gpu install is handled by FaceFusion's own
+# interactive `install.py`, not scriptable non-interactively without
+# guessing its prompts). serra1's NVIDIA driver caps at CUDA 12.5 (see
+# lose-the-faces-keep-the-lesson's pyproject.toml comment on the identical
+# constraint for its own onnxruntime-gpu dependency) — starting from that
+# SAME proven-working range instead of FaceFusion's much newer pin, since a
+# newer onnxruntime-gpu wheel likely targets CUDA 13.x and would silently
+# fail CUDAExecutionProvider init the same way this project's own earlier
+# attempt did before that range was found. NOT YET VERIFIED against
+# FaceFusion's own real code on this specific version — first real
+# empirical checkpoint once this venv is actually installed on serra1, not
+# assumed safe just because the version range matches this project's other
+# backend.
+onnxruntime-gpu>=1.19,<1.21; sys_platform == 'linux'
+onnxruntime>=1.19,<1.21; sys_platform != 'linux'
+onnx>=1.16.0
+
+# FaceFusion's own package may import UI-only modules (gradio) even for
+# headless use of its core face_swapper/face_enhancer processors — NOT
+# verified either way yet. If the first real server-boot test on serra1
+# raises ImportError for gradio/gradio-rangeslider, that's an expected,
+# cheap thing to add back here, not a sign the architecture is wrong.

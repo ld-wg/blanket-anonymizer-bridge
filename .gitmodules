@@ -1,0 +1,3 @@
+[submodule "vendor/blanket-infant-face-anonym"]
+	path = vendor/blanket-infant-face-anonym
+	url = https://github.com/ctu-vras/blanket-infant-face-anonym.git
