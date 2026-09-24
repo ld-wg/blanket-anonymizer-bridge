@@ -166,11 +166,33 @@ def main() -> None:
         # Real upstream bug workaround — see module docstring.
         anonymizer.seed = seed
 
+        # Real upstream bug: generate_synthetic_identity()/generate() both
+        # pass output_size=(orig_w, orig_h) — the CROP's own raw
+        # dimensions — straight through to the refiner stage. Confirmed
+        # crashing (2026-09-24) with `ValueError: operands could not be
+        # broadcast together` inside SDRefiner.refine()'s own compositing
+        # line: the SDXL img2img refiner pipeline doesn't reliably
+        # preserve odd/small input resolutions (our crops are far smaller
+        # and less "round" than BLANKET's own square demo images, which
+        # never triggered this), so its own output ends up a few pixels
+        # off from the mask saved before the refiner ran. Worked around by
+        # generating at BLANKET's own native, config-declared resolution
+        # (896x896 by default — safely divisible, what the refiner is
+        # actually tuned for) instead of the crop's own odd dimensions,
+        # then resizing the result back down to the crop's size ourselves
+        # before compositing — not a source patch, just not feeding their
+        # code a resolution it doesn't handle correctly.
+        native_w = anonymizer.config.get("width", 896)
+        native_h = anonymizer.config.get("height", 896)
         mask_path = output_dir / f"identity_{seed}_mask.png"
         synthetic_image = anonymizer.generate(
             image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
-            output_size=(orig_w, orig_h), save_mask_path=str(mask_path),
+            output_size=(native_w, native_h), save_mask_path=str(mask_path),
         )
+        synthetic_image = synthetic_image.resize((orig_w, orig_h), Image.LANCZOS)
+        if mask_path.is_file():
+            mask_native = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            cv2.imwrite(str(mask_path), cv2.resize(mask_native, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR))
 
         # Same Poisson color-blend post-step generate_synthetic_identity()
         # itself does, gated on the same config keys — reused here, not

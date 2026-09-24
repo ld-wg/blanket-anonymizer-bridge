@@ -123,6 +123,29 @@ VAE's own real `.enable_slicing()` if missing, for
 behavior (not just no-op'ing it away), which matters given serra1's GPUs
 are shared and already under real memory pressure from another user's job.
 
+## Real upstream bug #4 found and worked around (2026-09-24): refiner resolution mismatch
+
+Both `generate_synthetic_identity()` and `StableDiffusionAnonymizer.generate()`
+pass `output_size=(orig_w, orig_h)` — the INPUT crop's own raw
+dimensions — straight through to the SDXL refiner stage
+(`SDRefiner.refine()`). Confirmed crashing with `ValueError: operands
+could not be broadcast together with shapes (128,112,3) (133,117,1)`
+inside `refine()`'s own final compositing line
+(`refined_array * mask_array + base_array * (1.0 - mask_array)`): the
+refiner's own `StableDiffusionXLImg2ImgPipeline` doesn't reliably preserve
+odd/small input resolutions — our face crops are far smaller and less
+"round" than BLANKET's own square demo images (which never hit this),
+so its own output silently ends up a few pixels off from the mask saved
+before the refiner ran. `identity_server.py` works around this by
+generating at BLANKET's own native, config-declared resolution (896×896
+by default, read from `anonymizer.config`, not hardcoded) instead of the
+crop's own dimensions, then resizing the result (and its mask) back down
+to the crop's size itself, before the Poisson-blend compositing step —
+not a source patch, just not feeding their refiner a resolution it
+doesn't handle correctly, and doing the resize-back ourselves since
+BLANKET's own code never needed to (it always assumed `output_size`
+already matched the input image).
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
