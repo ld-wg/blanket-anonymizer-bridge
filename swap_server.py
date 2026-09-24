@@ -139,7 +139,27 @@ def main() -> None:
         try:
             result_frame, _bboxes = anonymizer.anonymize(image, detections=[])
         except RuntimeError as e:
-            if "No faces detected" in str(e):
+            # Both confirmed real on video-demo-2.mov (2026-09-24), both
+            # legitimate per-frame "nothing to swap here" outcomes in
+            # BLANKET's own real anonymize() -- neither is cached (unlike
+            # the "no face in identity image" case above): a transient
+            # per-frame miss, not a permanent property of this identity,
+            # so the very next frame gets a fresh attempt.
+            #
+            # "No faces detected": FaceFusion's own yolo_face found
+            # nothing in this crop.
+            #
+            # "IoU filter rejected all faces": BLANKET's own iou_filter
+            # (real, on by default in facefusion_parameters.yaml) rejects
+            # a detected face whose bbox doesn't match this identity's own
+            # previous_bboxes closely enough (config: iou_threshold=0.4) --
+            # BLANKET's own VideoPipeline.run() handles this by reusing the
+            # last successful frame's output; this project instead falls
+            # back to passthrough for just this one frame, matching this
+            # project's own existing no-usable-face contract rather than
+            # adding new per-identity "last successful swap" state to
+            # replicate upstream's exact fallback.
+            if "No faces detected" in str(e) or "IoU filter rejected all faces" in str(e):
                 return None  # legitimate — caller falls back to passthrough
             raise  # anything else (e.g. "FaceFusion returned unchanged
                    # image") is a real failure, surfaced as {"error": ...}

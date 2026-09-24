@@ -201,6 +201,24 @@ here and falls back to a plain hard-mask paste — the same fallback
 pattern this project's own `models/_compositing.py::poisson_composite()`
 already uses for the identical real-world failure mode, not a new one.
 
+## Real upstream bug #6 found and worked around (2026-09-24): IoU-filter rejection crash
+
+Confirmed crashing the whole pipeline run on `video-demo-2.mov`, at
+frame 100: `FaceFusionDirectAnonymizer.anonymize()` raises
+`RuntimeError("IoU filter rejected all faces - use previous frame")` when
+`iou_filter` (real, on by default) rejects every detected face against
+`previous_bboxes` for a given identity — a legitimate, expected outcome
+in BLANKET's own real pipeline (their own `VideoPipeline.run()` catches
+this and reuses the last successful frame), but `swap_server.py` only
+caught "No faces detected" before this fix, so it propagated uncaught.
+Now caught alongside "No faces detected", both treated as a transient
+per-frame "nothing to swap" (not cached — unlike the "no face in identity
+image" case, this is not a permanent property of the identity, the very
+next frame gets a fresh attempt) and passed through as `null`, matching
+this project's own existing no-usable-face contract rather than adding
+new per-identity "last successful swap" state to replicate BLANKET's own
+exact fallback.
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
