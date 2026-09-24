@@ -41,6 +41,7 @@ patching BLANKET's source, which this integration deliberately does not do.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -49,6 +50,14 @@ _BLANKET_ROOT = _HERE / "vendor" / "blanket-infant-face-anonym"
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_BLANKET_ROOT))
 sys.path.insert(0, str(_BLANKET_ROOT / "external" / "facefusion"))
+
+# Precautionary, mirroring identity_server.py's confirmed fix: BLANKET's own
+# DetectorFactory relies on bare relative paths assuming its own repo root
+# as CWD (confirmed there via a real FileNotFoundError). Not yet
+# independently confirmed whether FaceFusion's own code has the same
+# assumption — cheap to match anyway, and this is the directory their own
+# `run_video.py` expects to run from.
+os.chdir(_BLANKET_ROOT)
 
 from rpc_server import serve  # noqa: E402
 

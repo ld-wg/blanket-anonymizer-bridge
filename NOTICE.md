@@ -85,6 +85,21 @@ upstream usage and only surfaces because `identity_server.py` constructs
 by passing the correct `config_path` explicitly, not by patching their
 source.
 
+## Real upstream bug #2 found and worked around (2026-09-24)
+
+`blanket/core/detectors/detector_factory.py` resolves its own config files
+via bare relative `Path` objects (`Path("blanket/configs/detector_parameters/...")`),
+not derived from `__file__` — assumes the process's current working
+directory IS BLANKET's own repo root (true when running their own
+`run_video.py`/`run_image_anonymization.py` from inside that checkout;
+false for a server script living in this sibling repo). Confirmed via a
+real `FileNotFoundError` on the very first `generate` RPC. Both
+`identity_server.py` and `swap_server.py` now `os.chdir()` to the BLANKET
+submodule root at startup — matching the CWD their own code implicitly
+expects, not a source patch. (Confirmed necessary for `identity_server.py`;
+added to `swap_server.py` too as a precaution, not yet independently
+hit there.)
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was

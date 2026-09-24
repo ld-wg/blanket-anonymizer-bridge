@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,17 @@ _HERE = Path(__file__).resolve().parent
 _BLANKET_ROOT = _HERE / "vendor" / "blanket-infant-face-anonym"
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_BLANKET_ROOT))
+
+# BLANKET's own DetectorFactory (blanket/core/detectors/detector_factory.py)
+# resolves its config files via BARE relative Path objects
+# (`Path("blanket/configs/detector_parameters/...")`, not derived from
+# `__file__`) — confirmed via a real FileNotFoundError when this server
+# was run with its own repo (blanket-anonymizer-bridge) as the working
+# directory, not BLANKET's own. Their own `run_video.py`/`run_image_anonymization.py`
+# implicitly assume being invoked with BLANKET's own repo root as CWD.
+# Matching that assumption here — not a source patch, just running from the
+# directory their own code expects.
+os.chdir(_BLANKET_ROOT)
 
 from rpc_server import serve  # noqa: E402
 
