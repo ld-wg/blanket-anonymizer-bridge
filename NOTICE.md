@@ -102,22 +102,26 @@ hit there.)
 
 ## Real diffusers-version incompatibility found and worked around (2026-09-24)
 
-`StableDiffusionAnonymizer._load_pipeline()` unconditionally calls
-`self._pipeline.enable_vae_slicing()` — confirmed crashing with
-`AttributeError: 'StableDiffusionXLControlNetInpaintPipeline' object has
-no attribute 'enable_vae_slicing'` on the first real `generate()` call
-(reached only after successfully downloading and loading all 7 pipeline
-components — a genuine version-compatibility gap, not a download/config
-problem). `enable_sequential_cpu_offload()`/`enable_attention_slicing(1)`,
-called just before it in the same method, both work fine — this is
-specific to the ControlNet inpaint pipeline class not exposing that one
-convenience method on the installed `diffusers` version.
-`identity_server.py` patches this externally, on the class (not
-BLANKET's source file): `StableDiffusionXLControlNetInpaintPipeline.enable_vae_slicing`
-is set to delegate to the VAE's own real `.enable_slicing()` if missing —
-preserving the actual memory-saving behavior (not just no-op'ing it away),
-which matters given serra1's GPUs are shared and already under real
-memory pressure from another user's job.
+Both `StableDiffusionAnonymizer._load_pipeline()` (base/ControlNet inpaint
+stage) AND `SDRefiner.load()` (refiner stage) unconditionally call
+`<pipeline>.enable_vae_slicing()` — confirmed crashing on real `generate()`
+calls with `AttributeError: '...Pipeline' object has no attribute
+'enable_vae_slicing'`, first on `StableDiffusionXLControlNetInpaintPipeline`
+(reached only after successfully downloading/loading all 7 base pipeline
+components), then again on `StableDiffusionXLImg2ImgPipeline` (the
+refiner) once the first was patched — a genuine, apparently version-wide
+gap across SDXL pipeline classes in the installed `diffusers` version, not
+specific to one class or a download/config problem.
+`enable_sequential_cpu_offload()`/`enable_attention_slicing(1)`, called
+just before it in both places, work fine on both classes.
+`identity_server.py` patches this externally, on each class (not
+BLANKET's source files): `enable_vae_slicing` is set to delegate to the
+VAE's own real `.enable_slicing()` if missing, for
+`StableDiffusionXLControlNetInpaintPipeline`,
+`StableDiffusionXLImg2ImgPipeline`, and (defensively, not yet hit)
+`StableDiffusionXLInpaintPipeline` — preserving the actual memory-saving
+behavior (not just no-op'ing it away), which matters given serra1's GPUs
+are shared and already under real memory pressure from another user's job.
 
 ## Known open risks (not yet resolved empirically)
 
