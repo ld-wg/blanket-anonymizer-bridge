@@ -79,6 +79,16 @@ requirements — don't treat the license name as a formality.
   and pinning the exact `torch==2.6.0+cu124`/`torchvision==0.21.0+cu124`
   versions already verified working on this same machine. Re-verify if
   either pin is ever bumped.
+- **Same class of bug found again, one layer deeper (2026-09-24)**:
+  `transformers` eagerly imports `torchaudio` via a transitive chain
+  (`transformers.audio_utils`, reached through its CLIP image-processor
+  import path — imported even for pure-vision use, no audio anywhere in
+  this pipeline) whenever it's installed at all. `torchaudio` wasn't
+  pinned in this file, so pip resolved its own latest (`2.11.0`, CUDA
+  13-targeted `libcudart.so.13`) — confirmed breaking `import diffusers`
+  with the exact same `OSError: libcudart.so.13: cannot open shared
+  object file` symptom as the torch/torchvision bug above. Fixed the same
+  way: pinned `torchaudio==2.6.0+cu124` through the same index.
 - **`requirements-swap.txt` deliberately pins `onnxruntime-gpu<1.21`**,
   older than FaceFusion's own vendored `requirements.txt` (`onnxruntime==1.23.2`,
   and that one's CPU-only anyway) — chosen to match

@@ -23,11 +23,23 @@
 # working for that project's phase2-ganonymization extra
 # (torch==2.6.0+cu124/torchvision==0.21.0+cu124, confirmed initializing
 # CUDA and running real inference on this same machine).
+# torchaudio: NOT a direct dependency of anything this backend actually
+# uses (no audio anywhere in this pipeline) — but VERIFIED (2026-09-24)
+# that `transformers` eagerly imports it via a transitive chain
+# (transformers.audio_utils, reached through its CLIP image-processor
+# import path, imported even for pure-vision use) whenever it's installed
+# at all, and pip resolved an unpinned `torchaudio==2.11.0` (its own latest,
+# CUDA-13-targeted `libcudart.so.13`) since nothing here constrained it —
+# broke the exact same way the unpinned torch/torchvision did before this
+# file's earlier fix. Pinned to the version actually released alongside
+# torch 2.6.0, through the same cu124 index.
 --extra-index-url https://download.pytorch.org/whl/cu124
 torch==2.6.0+cu124 ; sys_platform == 'linux'
 torch>=2.2 ; sys_platform == 'darwin'
 torchvision==0.21.0+cu124 ; sys_platform == 'linux'
 torchvision>=0.17 ; sys_platform == 'darwin'
+torchaudio==2.6.0+cu124 ; sys_platform == 'linux'
+torchaudio>=2.2 ; sys_platform == 'darwin'
 diffusers>=0.25.0
 transformers>=4.35.0
 accelerate>=0.25.0
