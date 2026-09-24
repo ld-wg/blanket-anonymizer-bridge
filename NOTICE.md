@@ -166,6 +166,25 @@ already ran before the check that raises this) — the affected track
 passes through unmodified for its whole duration, same contract as any
 other "no usable face" case.
 
+## Deliberate deviation from BLANKET's own prompt: dropped "baby" (2026-09-24)
+
+BLANKET's own real prompt (`stable_diffusion_parameters.yaml`) is
+literally `"high quality photo of a baby face, ..."`. This project's own
+first real-video run found generated identities skewing strongly
+infant-like regardless of the actual subject's age. Verified the
+checkpoint itself (`diffusers/stable-diffusion-xl-1.0-inpainting-0.1`) is
+a generic public SDXL inpainting release, not fine-tuned on an infant
+dataset — the bias traces to this one prompt phrase, not the model
+weights, so no different checkpoint is needed. `identity_server.py`'s
+`--prompt` now defaults to the same wording with "a baby face" replaced by
+"a person's face" (every other quality/style descriptor kept verbatim from
+BLANKET's own prompt); pass BLANKET's original wording via `--prompt` to
+A/B against it directly. `--negative-prompt` still defaults to BLANKET's
+own real value, unchanged. Not yet wired through
+`lose-the-faces-keep-the-lesson`'s own `run.py` CLI — currently only
+overridable by invoking `identity_server.py` directly with a different
+`--prompt`.
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was

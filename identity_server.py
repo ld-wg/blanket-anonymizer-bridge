@@ -68,10 +68,33 @@ os.chdir(_BLANKET_ROOT)
 from rpc_server import serve  # noqa: E402
 
 
+# BLANKET's own real prompt (stable_diffusion_parameters.yaml) is
+# literally "high quality photo of a BABY face..." — this project's own
+# real-video calibration (2026-09-24) found the generated identities skew
+# strongly infant-like regardless of the actual subject's age, consistent
+# with that explicit wording (the checkpoint itself,
+# diffusers/stable-diffusion-xl-1.0-inpainting-0.1, is a generic public
+# SDXL inpainting release — NOT trained/fine-tuned on an infant dataset;
+# the bias traces to this one prompt phrase, not the model weights). This
+# project's own subjects are not infants, so the default here drops "baby"
+# for an age-neutral phrase, keeping every other quality/style descriptor
+# from BLANKET's own real prompt unchanged. Overridable via --prompt for
+# direct A/B comparison against the original wording.
+_DEFAULT_PROMPT = (
+    "high quality photo of a person's face, realistic, natural lighting, "
+    "clear features, natural skin tone, soft features, no makeup"
+)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--device", default=None, help="cuda/mps/cpu — default: auto-detect")
+    parser.add_argument("--prompt", default=_DEFAULT_PROMPT,
+                        help="Overrides BLANKET's own real prompt (which says 'baby face' "
+                             "explicitly) — pass BLANKET's original wording here to A/B against it")
+    parser.add_argument("--negative-prompt", default=None,
+                        help="default: BLANKET's own real negative_prompt, unchanged")
     args = parser.parse_args()
 
     # Everything heavy is imported lazily, inside main(), so `--help` and
@@ -138,6 +161,15 @@ def main() -> None:
 
     print("[identity_server] loading StableDiffusionAnonymizer (SDXL+ControlNet+refiner)...", flush=True)
     anonymizer = StableDiffusionAnonymizer(config_path=str(config_path), device=args.device)
+    # Override the prompt/negative_prompt attributes BLANKET's own
+    # __init__ already set from its config — same pattern as the `seed`
+    # workaround above (a public-attribute override, not a source patch).
+    # See _DEFAULT_PROMPT's own comment for why the default here isn't
+    # BLANKET's real prompt verbatim.
+    anonymizer.prompt = args.prompt
+    if args.negative_prompt is not None:
+        anonymizer.negative_prompt = args.negative_prompt
+    print(f"[identity_server] prompt: {anonymizer.prompt!r}", flush=True)
     print("[identity_server] ready", flush=True)
 
     def generate(crop_path: str, seed: int):
