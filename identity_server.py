@@ -85,6 +85,24 @@ def main() -> None:
     from blanket.constants.enums.detection_enums import FaceDetectorModule, FacialLandmarksDetectorModule
     from blanket.core.detectors.detector_factory import DetectorFactory
 
+    # Real diffusers-version incompatibility, confirmed via a crash on the
+    # first real generate() call (2026-09-24): `_load_pipeline()`
+    # unconditionally calls `self._pipeline.enable_vae_slicing()`, but the
+    # installed diffusers version doesn't define that convenience method on
+    # `StableDiffusionXLControlNetInpaintPipeline` specifically (it's used
+    # here because our real config always sets `use_controlnet: true` with
+    # 2 ControlNets — `enable_sequential_cpu_offload()`/
+    # `enable_attention_slicing(1)`, called just before it, both work
+    # fine). Patched externally on the CLASS, not BLANKET's source file:
+    # delegates to the VAE's own real `.enable_slicing()` (what the missing
+    # convenience method would have called anyway), preserving the actual
+    # memory-saving behavior rather than silently no-op'ing it — matters
+    # here since serra1's GPUs are shared and already under real memory
+    # pressure.
+    from diffusers import StableDiffusionXLControlNetInpaintPipeline
+    if not hasattr(StableDiffusionXLControlNetInpaintPipeline, "enable_vae_slicing"):
+        StableDiffusionXLControlNetInpaintPipeline.enable_vae_slicing = lambda self: self.vae.enable_slicing()
+
     output_dir = _HERE / "output" / "identities"
     output_dir.mkdir(parents=True, exist_ok=True)
 
