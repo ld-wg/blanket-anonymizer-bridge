@@ -49,8 +49,9 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
+_BLANKET_ROOT = _HERE / "vendor" / "blanket-infant-face-anonym"
 sys.path.insert(0, str(_HERE))
-sys.path.insert(0, str(_HERE / "vendor" / "blanket-infant-face-anonym"))
+sys.path.insert(0, str(_BLANKET_ROOT))
 
 from rpc_server import serve  # noqa: E402
 
@@ -75,8 +76,24 @@ def main() -> None:
     output_dir = _HERE / "output" / "identities"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # StableDiffusionAnonymizer.__init__'s own default config_path (used
+    # when config_path=None) is off by one directory level — verified
+    # empirically (2026-09-24): it resolves to
+    # blanket/anonymization/configs/module_parameters/... which doesn't
+    # exist; the real file lives at
+    # blanket/configs/module_parameters/stable_diffusion_parameters.yaml.
+    # BLANKET's own generate_synthetic_identity() never hits this bug
+    # because it always computes and passes the correct path itself
+    # (3 parents up from image_pipeline.py, not stable_diffusion.py's own
+    # 2) — this server does the same thing explicitly, since it
+    # constructs StableDiffusionAnonymizer directly rather than going
+    # through that wrapper (see module docstring for why).
+    config_path = _BLANKET_ROOT / "blanket" / "configs" / "module_parameters" / "stable_diffusion_parameters.yaml"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"expected BLANKET's own config at {config_path}")
+
     print("[identity_server] loading StableDiffusionAnonymizer (SDXL+ControlNet+refiner)...", flush=True)
-    anonymizer = StableDiffusionAnonymizer(device=args.device)
+    anonymizer = StableDiffusionAnonymizer(config_path=str(config_path), device=args.device)
     print("[identity_server] ready", flush=True)
 
     def generate(crop_path: str, seed: int):

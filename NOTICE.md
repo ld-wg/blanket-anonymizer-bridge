@@ -67,6 +67,24 @@ anonymization/privacy-protection research purpose it exists for. OpenRAIL
 licenses carry real behavioral-use restrictions, not just attribution
 requirements — don't treat the license name as a formality.
 
+## Real upstream bug found and worked around (2026-09-24)
+
+`StableDiffusionAnonymizer.__init__`'s own default `config_path` resolution
+(used whenever `config_path=None`) is off by one directory level:
+`Path(__file__).parent.parent / "configs" / "module_parameters" / "stable_diffusion_parameters.yaml"`
+resolves to `blanket/anonymization/configs/module_parameters/...`, which
+does not exist — confirmed via a real `FileNotFoundError` on first
+construction. The actual file lives at
+`blanket/configs/module_parameters/stable_diffusion_parameters.yaml`.
+BLANKET's own `generate_synthetic_identity()` never hits this because it
+always computes and passes the *correct* path itself (three parents up
+from `image_pipeline.py`, not `stable_diffusion.py`'s own two) before
+constructing `StableDiffusionAnonymizer` — this bug is latent in normal
+upstream usage and only surfaces because `identity_server.py` constructs
+`StableDiffusionAnonymizer` directly (see README for why). Worked around
+by passing the correct `config_path` explicitly, not by patching their
+source.
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
