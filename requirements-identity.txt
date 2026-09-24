@@ -54,8 +54,10 @@ scipy>=1.10.0
 
 # VERIFIED NEEDED AT RUNTIME (2026-09-24), not just a build-time tool as
 # first assumed: SPIGA's own dl_config.py does `import pkg_resources`
-# (the old, pre-importlib.metadata setuptools API) — confirmed failing
-# with `ModuleNotFoundError: No module named 'pkg_resources'` on a fresh
-# venv where it wasn't explicitly installed (newer `python -m venv` no
-# longer seeds setuptools automatically the way it used to).
-setuptools>=65.0.0
+# (the old, pre-importlib.metadata setuptools API). A plain
+# `setuptools>=65.0.0` still resolved a too-new setuptools (84.0.0 seen
+# here) that has since dropped bundling pkg_resources entirely — confirmed
+# `ModuleNotFoundError` even with recent setuptools installed. Capped
+# below 70 instead, confirmed empirically to still include it (with an
+# expected deprecation warning, harmless).
+setuptools>=65.0.0,<70
