@@ -219,6 +219,45 @@ this project's own existing no-usable-face contract rather than adding
 new per-identity "last successful swap" state to replicate BLANKET's own
 exact fallback.
 
+## Upstream config values that are silently ignored or clamped (found 2026-09-24)
+
+Found while reading the code paths this bridge calls, to plan the calling
+project's identity-guidance work. Neither causes a crash; both mean
+BLANKET's shipped configuration does not do what it says. This bridge
+leaves both unchanged, so the baseline matches upstream behaviour.
+
+1. **The `scheduler` key is never read.**
+   `blanket/configs/module_parameters/stable_diffusion_parameters.yaml:19`
+   says `scheduler: DPMSolverMultistepScheduler`, but no Python file under
+   `blanket/` contains the string `scheduler` (grep on the pinned
+   submodule). The pipeline keeps the scheduler from the checkpoint's own
+   `scheduler_config.json`: `EulerDiscreteScheduler`, epsilon prediction.
+   Anyone reproducing BLANKET from the YAML alone would pick the wrong
+   sampler.
+2. **`face_swapper_weight = 100` is outside the valid range and clamps.**
+   BLANKET's `blanket/anonymization/methods/facefusion.py:143` sets
+   `state_manager.init_item('face_swapper_weight', 100)`. FaceFusion's own
+   range is 0.0–1.0 (`face_swapper/choices.py:25`, and the CLI enforces it
+   through `choices=`; `init_item` bypasses that check).
+   `balance_source_embedding` (`face_swapper/core.py:699-710`) maps the
+   weight with `numpy.interp(weight, [0, 1], [0.35, -0.35])`, and `interp`
+   clamps, so `w = -0.35`. The swap is conditioned on
+   `1.35 · source − 0.35 · target`, where `target` is the embedding of the
+   real face **in the current frame**. In effect, BLANKET pushes the swap
+   away from the real person by a fixed amount, one frame at a time. That
+   may be intended, but the value suggests a 0–100 scale was assumed.
+
+**Open question the second point raises.** For `inswapper`,
+`prepare_source_embedding` (`core.py:686-691`) projects the source through
+the model's `emap` initializer and divides by the raw embedding's norm;
+`balance_source_embedding` only L2-normalizes the target, with no `emap`
+projection. The two terms of the mix are then in different spaces unless
+`emap` is close to orthogonal. Not measured yet; the calling project's plan
+measures it before building on this mix (Step 4 of
+`research/next-steps/contribution-implementation-plan.md` in
+`lose-the-faces-keep-the-lesson`, a gitignored research vault, so the path
+is local only).
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
