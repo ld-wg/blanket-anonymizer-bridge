@@ -146,6 +146,26 @@ doesn't handle correctly, and doing the resize-back ourselves since
 BLANKET's own code never needed to (it always assumed `output_size`
 already matched the input image).
 
+## Real finding, not a bug: identity generation can produce a face FaceFusion's own detector can't find (2026-09-24)
+
+Confirmed via a real end-to-end run: one identity's generated synthetic
+face (an extreme down/side head angle, inherited faithfully by BLANKET's
+own ControlNet conditioning from the original crop's own pose) had no
+face `FaceFusionDirectAnonymizer.__init__`'s own `face_analyser` could
+detect — it raises `ValueError: No face detected in source: ...` at
+construction time. This is a real quality/robustness limitation of
+BLANKET's own pipeline on non-infant, non-frontal real-world footage, not
+an integration bug — this project's own faces are school-age children/
+adults in a classroom setting, not the controlled infant recordings
+BLANKET was evaluated on. `swap_server.py` now catches this specific
+`ValueError` and treats it as a legitimate "nothing to swap" result
+(caching the failure per `identity_path`, since retrying the same
+identity image would fail identically every time, and
+`FaceFusionDirectAnonymizer.__init__`'s own expensive `pre_check()` calls
+already ran before the check that raises this) — the affected track
+passes through unmodified for its whole duration, same contract as any
+other "no usable face" case.
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was

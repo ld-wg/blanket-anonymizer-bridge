@@ -13,9 +13,18 @@ Protocol (see `rpc_server.py`). One op:
 
     {"op": "swap", "identity_path": "<path>", "crop_path": "<path>"}
     -> {"result": "<path to the swapped crop>"}
-    -> {"result": null}   # FaceFusion's own internal yolo_face redetection
-                          # found no face in this particular crop —
-                          # legitimate, caller falls back to passthrough
+    -> {"result": null}   # legitimate "nothing to swap": either FaceFusion's
+                          # own internal yolo_face redetection found no face
+                          # in this particular target crop, OR (confirmed
+                          # 2026-09-24, real not hypothetical) the SDXL-
+                          # generated identity image itself has no
+                          # detectable face — real quality/pose limitation,
+                          # e.g. BLANKET's ControlNet conditioning
+                          # faithfully reproducing an extreme down/side
+                          # angle from the original crop, which the "baby
+                          # face" generation doesn't reliably straighten
+                          # out. Either way, caller falls back to
+                          # passthrough for the rest of that track.
     -> {"error": "..."}
 
 **Config: BLANKET's own real, unmodified
@@ -89,21 +98,41 @@ def main() -> None:
     # new instance; the same identity across every frame of one track
     # reuses one, which is also what makes iou_filter's own frame-to-frame
     # continuity state meaningful (see module docstring).
-    _anonymizers: dict[str, "FaceFusionDirectAnonymizer"] = {}
+    # Cache holds a real anonymizer, OR `False` for an identity_path
+    # confirmed to have no detectable face (see below) — `False`, not
+    # missing-from-dict, so a doomed identity's expensive-but-failing
+    # FaceFusionDirectAnonymizer construction (pre_check() for every
+    # enabled processor already runs BEFORE the "no face" check inside
+    # BLANKET's own __init__) is never retried on every subsequent frame
+    # of the same track.
+    _anonymizers: dict[str, object] = {}
     _counter = {"n": 0}
 
-    def _get_anonymizer(identity_path: str) -> "FaceFusionDirectAnonymizer":
-        anonymizer = _anonymizers.get(identity_path)
-        if anonymizer is None:
-            print(f"[swap_server] loading FaceFusionDirectAnonymizer for {identity_path}...", flush=True)
+    def _get_anonymizer(identity_path: str):
+        if identity_path in _anonymizers:
+            return _anonymizers[identity_path]  # real anonymizer, or False
+        print(f"[swap_server] loading FaceFusionDirectAnonymizer for {identity_path}...", flush=True)
+        try:
             anonymizer = FaceFusionDirectAnonymizer(
                 synthetic_face_path=identity_path, config_path=str(_CONFIG_PATH),
             )
-            _anonymizers[identity_path] = anonymizer
+        except ValueError as e:
+            # Real, confirmed case (2026-09-24): FaceFusionDirectAnonymizer's
+            # own __init__ raises this when its face_analyser finds zero
+            # faces in the identity image itself — see module docstring.
+            if "No face detected in source" in str(e):
+                print(f"[swap_server] no usable face in identity image {identity_path} "
+                      "-- this track will passthrough for its whole duration", flush=True)
+                _anonymizers[identity_path] = False
+                return False
+            raise
+        _anonymizers[identity_path] = anonymizer
         return anonymizer
 
     def swap(identity_path: str, crop_path: str):
         anonymizer = _get_anonymizer(identity_path)
+        if anonymizer is False:
+            return None  # confirmed unusable identity image, legitimate skip
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
