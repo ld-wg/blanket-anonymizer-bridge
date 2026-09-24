@@ -51,3 +51,11 @@ ultralytics>=8.0.0
 spiga @ git+https://github.com/andresprados/SPIGA.git
 pyyaml>=6.0
 scipy>=1.10.0
+
+# VERIFIED NEEDED AT RUNTIME (2026-09-24), not just a build-time tool as
+# first assumed: SPIGA's own dl_config.py does `import pkg_resources`
+# (the old, pre-importlib.metadata setuptools API) — confirmed failing
+# with `ModuleNotFoundError: No module named 'pkg_resources'` on a fresh
+# venv where it wasn't explicitly installed (newer `python -m venv` no
+# longer seeds setuptools automatically the way it used to).
+setuptools>=65.0.0
