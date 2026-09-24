@@ -64,7 +64,7 @@ unmodified method.
 ## Setup
 
 ```bash
-git clone --recurse-submodules <this-repo-url>
+git clone --recurse-submodules https://github.com/ld-wg/blanket-anonymizer-bridge.git
 cd blanket-anonymizer-bridge
 ./setup.sh            # creates .venv-identity, .venv-swap; installs each
                        # role's hand-picked requirements-*.txt
