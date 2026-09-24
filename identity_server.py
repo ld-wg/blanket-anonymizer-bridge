@@ -238,8 +238,31 @@ def main() -> None:
             if moments["m00"] != 0:
                 center = (int(moments["m10"] / moments["m00"]), int(moments["m01"] / moments["m00"]))
                 blend_flag = cv2.NORMAL_CLONE if poisson_mode == "NORMAL" else cv2.MIXED_CLONE
-                blended = cv2.seamlessClone(synthetic_bgr, image, mask, center, blend_flag)
-                synthetic_image = Image.fromarray(cv2.cvtColor(blended, cv2.COLOR_BGR2RGB))
+                # Real crash found on video-demo-2.mov (2026-09-24):
+                # cv2.seamlessClone requires the mask's own bounding region,
+                # placed at `center`, to stay fully inside `image`'s bounds
+                # -- a face close to the crop's own edge (itself close to
+                # the source video's frame edge, since crop_box() clamps
+                # there) can produce a mask whose extent pokes past it,
+                # raising a hard cv2.error. Neither this project's own
+                # generate_synthetic_identity() port nor, as far as we
+                # verified, BLANKET's own real function guards against
+                # this -- it's a latent bug in the upstream mechanism
+                # itself, just never triggered by their own centered square
+                # demo images. Falls back to a plain hard-mask paste,
+                # mirroring the exact fallback models/_compositing.py's
+                # own poisson_composite() already uses for the same
+                # real-world failure mode -- not a new pattern.
+                try:
+                    blended = cv2.seamlessClone(synthetic_bgr, image, mask, center, blend_flag)
+                    synthetic_image = Image.fromarray(cv2.cvtColor(blended, cv2.COLOR_BGR2RGB))
+                except cv2.error as e:
+                    print(f"[identity_server] seamlessClone failed ({e}) -- "
+                          "falling back to a hard-mask paste for this identity", flush=True)
+                    mask_bool = mask.astype(bool)
+                    fallback = image.copy()
+                    fallback[mask_bool] = synthetic_bgr[mask_bool]
+                    synthetic_image = Image.fromarray(cv2.cvtColor(fallback, cv2.COLOR_BGR2RGB))
 
         identity_path = output_dir / f"identity_{seed}.jpg"
         synthetic_image.save(identity_path)

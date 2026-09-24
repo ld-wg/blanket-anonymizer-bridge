@@ -185,6 +185,22 @@ own real value, unchanged. Not yet wired through
 overridable by invoking `identity_server.py` directly with a different
 `--prompt`.
 
+## Real upstream bug #5 found and worked around (2026-09-24): seamlessClone crash near frame edges
+
+Confirmed crashing on `video-demo-2.mov` (denser scene, faces closer to
+frame edges than `video-demo.mov`): `cv2.seamlessClone` requires the
+mask's own bounding region, placed at its centroid, to stay fully inside
+the destination image — a face near the crop's own edge (itself near the
+source frame's edge, since `crop_box()` clamps there) can produce a mask
+whose extent pokes past the crop, raising a hard `cv2.error`. Neither this
+project's port of `generate_synthetic_identity()`'s Poisson-blend step nor,
+as far as verified, BLANKET's own real function guards against this — a
+latent bug in the mechanism itself, never triggered by BLANKET's own
+centered square demo images. `identity_server.py` now catches `cv2.error`
+here and falls back to a plain hard-mask paste — the same fallback
+pattern this project's own `models/_compositing.py::poisson_composite()`
+already uses for the identical real-world failure mode, not a new one.
+
 ## Known open risks (not yet resolved empirically)
 
 - **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
