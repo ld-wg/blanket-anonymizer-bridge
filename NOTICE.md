@@ -69,6 +69,16 @@ requirements — don't treat the license name as a formality.
 
 ## Known open risks (not yet resolved empirically)
 
+- **`requirements-identity.txt`'s plain `torch`/`torchvision` pin was
+  CONFIRMED FAILING on serra1 (2026-09-24)**: a plain `pip install -r
+  requirements-identity.txt` started downloading `torch==2.14.0` +
+  `nvidia_cudnn_cu13`/`nvidia_nccl_cu13` (CUDA 13.x runtime) before being
+  caught and killed partway through — same class of failure this
+  project's own calling repo already solved for its torch dependency.
+  Fixed by adding `--extra-index-url https://download.pytorch.org/whl/cu124`
+  and pinning the exact `torch==2.6.0+cu124`/`torchvision==0.21.0+cu124`
+  versions already verified working on this same machine. Re-verify if
+  either pin is ever bumped.
 - **`requirements-swap.txt` deliberately pins `onnxruntime-gpu<1.21`**,
   older than FaceFusion's own vendored `requirements.txt` (`onnxruntime==1.23.2`,
   and that one's CPU-only anyway) — chosen to match

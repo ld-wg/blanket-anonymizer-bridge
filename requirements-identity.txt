@@ -11,8 +11,23 @@
 #
 # Kept intentionally close to BLANKET's own version floors rather than
 # re-deriving our own — these are their tested minimums, not guesses.
-torch>=2.0.0
-torchvision>=0.15.0
+#
+# torch/torchvision: a plain `torch>=2.0.0` resolves to the latest PyPI
+# wheel, which bundles its own CUDA 13.x runtime — VERIFIED FAILING on
+# serra1 (2026-09-24): pip started downloading torch==2.14.0 +
+# nvidia_cudnn_cu13/nvidia_nccl_cu13, hundreds of MB in, before this was
+# caught and killed. serra1's driver caps at CUDA 12.5 (same constraint
+# lose-the-faces-keep-the-lesson's own pyproject.toml already documents for
+# its own torch/onnxruntime-gpu deps) — redirected to PyTorch's own cu124
+# wheel index instead, pinned to the EXACT versions already verified
+# working for that project's phase2-ganonymization extra
+# (torch==2.6.0+cu124/torchvision==0.21.0+cu124, confirmed initializing
+# CUDA and running real inference on this same machine).
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124 ; sys_platform == 'linux'
+torch>=2.2 ; sys_platform == 'darwin'
+torchvision==0.21.0+cu124 ; sys_platform == 'linux'
+torchvision>=0.17 ; sys_platform == 'darwin'
 diffusers>=0.25.0
 transformers>=4.35.0
 accelerate>=0.25.0
