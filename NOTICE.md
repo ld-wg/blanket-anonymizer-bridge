@@ -247,16 +247,36 @@ leaves both unchanged, so the baseline matches upstream behaviour.
    away from the real person by a fixed amount, one frame at a time. That
    may be intended, but the value suggests a 0–100 scale was assumed.
 
-**Open question the second point raises.** For `inswapper`,
-`prepare_source_embedding` (`core.py:686-691`) projects the source through
-the model's `emap` initializer and divides by the raw embedding's norm;
+**The second point's mix is between two different spaces (measured
+2026-09-25).** For `inswapper`, `prepare_source_embedding`
+(`core.py:686-691`) projects the source through the model's `emap`
+initializer and divides by the raw embedding's norm, while
 `balance_source_embedding` only L2-normalizes the target, with no `emap`
-projection. The two terms of the mix are then in different spaces unless
-`emap` is close to orthogonal. Not measured yet; the calling project's plan
-measures it before building on this mix (Step 4 of
-`research/next-steps/contribution-implementation-plan.md` in
-`lose-the-faces-keep-the-lesson`, a gitignored research vault, so the path
-is local only).
+projection. `tools/check_embedding_space.py`, run on 300 faces from
+`video-demo-2.mov`, measured how far apart those spaces are:
+
+- **`emap` is far from orthogonal.** ‖EᵀE − I‖_F / √512 = 51.87, and its
+  singular values run from 0.0013 to 19.84.
+- **`e·E` points in an unrelated direction.** cos(e, e·E) over real ArcFace
+  embeddings: mean 0.0014 (min −0.085, max 0.095). The projected source
+  and the unprojected target are effectively orthogonal spaces.
+
+So BLANKET's native `1.35·(e_src·E) − 0.35·ê_target` does not push the
+swap away from the real face in the swapper's conditioning space. It adds
+a vector that, in that space, bears no relation to the target identity.
+This mix is FaceFusion's general `face_swapper_weight` behavior for
+inswapper, not something BLANKET introduced; BLANKET's out-of-range value
+only pins it at the extreme. The calling project's `track` swap mode
+pushes in raw ArcFace space *before* the projection. Because the
+projection is linear, that is a push away from p·E in the conditioning
+space, which is the consistent version.
+
+The same run also confirmed that FaceFusion's
+`.assets/models/arcface_w600k_r50.onnx` (sha256 `f1f79dc3…70d1`) and
+insightface buffalo_l's `w600k_r50.onnx` (sha256 `4c06341c…9e43`) are
+different files but the same model: cosine 1.0000 on all 300 identical
+aligned crops. The calling project's track-level identity estimate
+therefore lives in the swap stage's own embedding space.
 
 ## Known open risks (not yet resolved empirically)
 
