@@ -33,6 +33,31 @@ Protocol (see `rpc_server.py`). Three ops:
     {"op": "check_identity", "identity_path": "<path>"}
     -> {"result": true | false}   # does FaceFusion find a face in it?
 
+`swap_with_reason` also takes an optional identity-push mode (the calling
+project's contribution step P2):
+
+    "mode": "native" | "none" | "track"   (default "native")
+    "push": [512 floats] | null            (required for "track")
+    "beta": <float>                        (push strength for "track")
+
+- `native`: BLANKET unchanged. It sets `face_swapper_weight = 100`,
+  outside FaceFusion's 0–1 range; `balance_source_embedding` clamps it to
+  w = −0.35, so the swap is conditioned on 1.35·synthetic − 0.35·(the real
+  face in *this* frame) — a fixed single-frame push away (see NOTICE.md).
+- `none`: `face_swapper_weight = 0.5` → w = 0: the synthetic embedding
+  alone, no push. The control arm.
+- `track`: w = 0 as in `none`, and the source face's embedding is replaced
+  by `normalize(ê_synth − beta·p)`, where `p` is the caller's track-level
+  estimate of the real person's identity (unit vector in the same ArcFace
+  w600k_r50 space FaceFusion's recognizer uses). The push happens in raw
+  ArcFace space, before inswapper's `emap` projection, so both terms live
+  in one space — unlike `native`'s mix (NOTICE.md, open question).
+  Implemented through the anonymizer's public `source_face` attribute
+  (FaceFusion's `Face` is a namedtuple), no source change.
+
+`push` is biometric data (an estimate of a real person's face identity):
+it is used in memory for one call and never logged or written.
+
 `check_identity` lets the caller try another candidate crop right after
 generating an unusable identity, instead of discovering it at the first
 swap and passing the whole track through.
@@ -94,9 +119,11 @@ def main() -> None:
     args = parser.parse_args()
 
     import cv2
+    import numpy as np
     import yaml
 
     from blanket.anonymization.methods.facefusion import FaceFusionDirectAnonymizer
+    from facefusion import state_manager
 
     output_dir = _HERE / "output" / "swapped"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -155,13 +182,39 @@ def main() -> None:
     def check_identity(identity_path: str) -> bool:
         return _get_anonymizer(identity_path) is not False
 
+    # identity_path -> the source face as FaceFusion computed it, before any
+    # push replaced its embedding.
+    _original_faces: dict[str, object] = {}
+    _modes = {"native": 100, "none": 0.5, "track": 0.5}  # mode -> face_swapper_weight
+
+    def _apply_mode(anonymizer, identity_path: str, mode: str, push, beta: float) -> None:
+        if mode not in _modes:
+            raise ValueError(f"unknown swap mode {mode!r} (known: {sorted(_modes)})")
+        original = _original_faces.setdefault(identity_path, anonymizer.source_face)
+        # Global FaceFusion state, and every new FaceFusionDirectAnonymizer
+        # resets it to 100 in its __init__ — so it is set on every call.
+        state_manager.init_item("face_swapper_weight", _modes[mode])
+        if mode != "track":
+            anonymizer.source_face = original
+            return
+        if push is None:
+            raise ValueError("swap mode 'track' needs a push embedding")
+        synth = np.asarray(original.embedding, dtype=np.float32)
+        synth = synth / np.linalg.norm(synth)
+        p = np.asarray(push, dtype=np.float32)
+        p = p / np.linalg.norm(p)
+        pushed = synth - float(beta) * p
+        pushed = (pushed / np.linalg.norm(pushed)).astype(np.float32)
+        anonymizer.source_face = original._replace(embedding=pushed, embedding_norm=pushed)
+
     def swap(identity_path: str, crop_path: str):
         return swap_with_reason(identity_path, crop_path)["path"]
 
-    def swap_with_reason(identity_path: str, crop_path: str):
+    def swap_with_reason(identity_path: str, crop_path: str, mode: str = "native", push=None, beta: float = 0.0):
         anonymizer = _get_anonymizer(identity_path)
         if anonymizer is False:
             return {"path": None, "reason": "identity_unusable"}
+        _apply_mode(anonymizer, identity_path, mode, push, beta)
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
