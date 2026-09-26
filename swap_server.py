@@ -9,27 +9,40 @@ This is the ONLY other place in this repository that imports BLANKET's own
 GPL-3.0 source directly (see `identity_server.py`'s docstring for the same
 rationale).
 
-Protocol (see `rpc_server.py`). One op:
+Protocol (see `rpc_server.py`). Three ops:
 
     {"op": "swap", "identity_path": "<path>", "crop_path": "<path>"}
-    -> {"result": "<path to the swapped crop>"}
-    -> {"result": null}   # legitimate "nothing to swap": either FaceFusion's
-                          # own internal yolo_face redetection found no face
-                          # in this particular target crop, OR (confirmed
-                          # 2026-09-24, real not hypothetical) the SDXL-
-                          # generated identity image itself has no
-                          # detectable face — real quality/pose limitation,
-                          # e.g. BLANKET's ControlNet conditioning
-                          # faithfully reproducing an extreme down/side
-                          # angle from the original crop, which the "baby
-                          # face" generation doesn't reliably straighten
-                          # out. Either way, caller falls back to
-                          # passthrough for the rest of that track.
+    -> {"result": "<path to the swapped crop>" | null}
+          # the original op, unchanged, for callers predating the two below
+
+    {"op": "swap_with_reason", "identity_path": "<path>", "crop_path": "<path>"}
+    -> {"result": {"path": "<path to the swapped crop>", "reason": null}}
+    -> {"result": {"path": null, "reason": "<why>"}}
+          # legitimate "nothing to swap", one of:
+          #   identity_unusable  — the SDXL-generated identity image itself
+          #                        has no face FaceFusion can detect
+          #                        (confirmed 2026-09-24: e.g. ControlNet
+          #                        faithfully reproducing an extreme head
+          #                        angle); permanent for that identity
+          #   swap_no_face       — FaceFusion's own yolo_face found no face
+          #                        in this target crop; transient
+          #   swap_iou_rejected  — BLANKET's iou_filter rejected every face
+          #                        in this crop; transient
     -> {"error": "..."}
+
+    {"op": "check_identity", "identity_path": "<path>"}
+    -> {"result": true | false}   # does FaceFusion find a face in it?
+
+`check_identity` lets the caller try another candidate crop right after
+generating an unusable identity, instead of discovering it at the first
+swap and passing the whole track through.
 
 **Config: BLANKET's own real, unmodified
 `blanket/configs/module_parameters/facefusion_parameters.yaml` is used
-as-is — no override authored here.** Verified directly (2026-09-24) that
+as-is by default.** `--face-detector-score X` is the one override: it
+writes a copy of that YAML with only `face_detector_score` changed to
+`output/facefusion_parameters.override.yaml` and uses the copy (for the
+calling project's detector-threshold sweep; BLANKET ships 0.5). Verified directly (2026-09-24) that
 its real shipped defaults already do what this integration needs:
 `max_faces: 1` caps output to a single swapped face per crop even though
 `face_selector_mode` is hardcoded `'many'` inside
@@ -76,9 +89,12 @@ _CONFIG_PATH = _BLANKET_ROOT / "blanket" / "configs" / "module_parameters" / "fa
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
+    parser.add_argument("--face-detector-score", type=float, default=None,
+                        help="override BLANKET's face_detector_score (0.5) in a copy of its YAML")
     args = parser.parse_args()
 
     import cv2
+    import yaml
 
     from blanket.anonymization.methods.facefusion import FaceFusionDirectAnonymizer
 
@@ -90,6 +106,13 @@ def main() -> None:
             f"BLANKET's own facefusion_parameters.yaml not found at {_CONFIG_PATH} — "
             "check the vendor/blanket-infant-face-anonym submodule is initialized."
         )
+    config_path = _CONFIG_PATH
+    if args.face_detector_score is not None:
+        config = yaml.safe_load(_CONFIG_PATH.read_text())
+        config["face_detector_score"] = args.face_detector_score
+        config_path = _HERE / "output" / "facefusion_parameters.override.yaml"
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    print(f"[swap_server] FaceFusion config: {config_path}", flush=True)
 
     # One FaceFusionDirectAnonymizer instance per identity_path, cached —
     # its own __init__ does real, heavy one-time setup (pre_check() for
@@ -114,7 +137,7 @@ def main() -> None:
         print(f"[swap_server] loading FaceFusionDirectAnonymizer for {identity_path}...", flush=True)
         try:
             anonymizer = FaceFusionDirectAnonymizer(
-                synthetic_face_path=identity_path, config_path=str(_CONFIG_PATH),
+                synthetic_face_path=identity_path, config_path=str(config_path),
             )
         except ValueError as e:
             # Real, confirmed case (2026-09-24): FaceFusionDirectAnonymizer's
@@ -129,10 +152,16 @@ def main() -> None:
         _anonymizers[identity_path] = anonymizer
         return anonymizer
 
+    def check_identity(identity_path: str) -> bool:
+        return _get_anonymizer(identity_path) is not False
+
     def swap(identity_path: str, crop_path: str):
+        return swap_with_reason(identity_path, crop_path)["path"]
+
+    def swap_with_reason(identity_path: str, crop_path: str):
         anonymizer = _get_anonymizer(identity_path)
         if anonymizer is False:
-            return None  # confirmed unusable identity image, legitimate skip
+            return {"path": None, "reason": "identity_unusable"}
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
@@ -159,8 +188,10 @@ def main() -> None:
             # project's own existing no-usable-face contract rather than
             # adding new per-identity "last successful swap" state to
             # replicate upstream's exact fallback.
-            if "No faces detected" in str(e) or "IoU filter rejected all faces" in str(e):
-                return None  # legitimate — caller falls back to passthrough
+            if "No faces detected" in str(e):
+                return {"path": None, "reason": "swap_no_face"}
+            if "IoU filter rejected all faces" in str(e):
+                return {"path": None, "reason": "swap_iou_rejected"}
             raise  # anything else (e.g. "FaceFusion returned unchanged
                    # image") is a real failure, surfaced as {"error": ...}
                    # by rpc_server.py, not silently swallowed
@@ -168,9 +199,9 @@ def main() -> None:
         _counter["n"] += 1
         out_path = output_dir / f"swapped_{_counter['n']:08d}.png"
         cv2.imwrite(str(out_path), result_frame)
-        return str(out_path)
+        return {"path": str(out_path), "reason": None}
 
-    serve(args.socket, {"swap": swap})
+    serve(args.socket, {"swap": swap, "swap_with_reason": swap_with_reason, "check_identity": check_identity})
 
 
 if __name__ == "__main__":

@@ -11,11 +11,20 @@ that's confined to this repo and never crosses into
 
 Protocol (see `rpc_server.py`). One op:
 
-    {"op": "generate", "crop_path": "<path>", "seed": <int>}
+    {"op": "generate", "crop_path": "<path>", "seed": <int>,
+     "box": [l, t, r, b] | null, "tag": "<str>" | null}
     -> {"result": "<path to a generated identity image>"}
     -> {"result": null}   # no face found in this particular crop —
                           # legitimate, caller retries on a later frame
     -> {"error": "..."}
+
+`box` (optional, crop coordinates): the calling project's own Phase 1
+detection for this crop. When given, BLANKET's YOLO face detector is
+skipped and the box goes straight to SPIGA as a `FaceDetection` — BLANKET's
+own detector found no face in any crop of 11 of the 24 tracks on
+`video-demo-2.mov` although Phase 1 did (see NOTICE.md). `tag` (optional)
+is appended to the output file name, so several attempts for one seed
+(different candidate crops) do not overwrite each other.
 
 **Why this doesn't just call BLANKET's own
 `image_pipeline.generate_synthetic_identity()` directly**: that function
@@ -107,6 +116,7 @@ def main() -> None:
     from blanket.anonymization.methods.stable_diffusion import StableDiffusionAnonymizer
     from blanket.constants.enums.detection_enums import FaceDetectorModule, FacialLandmarksDetectorModule
     from blanket.core.detectors.detector_factory import DetectorFactory
+    from blanket.core.objects.detections import FaceDetection
 
     # Real diffusers-version incompatibility, confirmed via crashes on real
     # generate() calls (2026-09-24): both `StableDiffusionAnonymizer.
@@ -172,23 +182,31 @@ def main() -> None:
     print(f"[identity_server] prompt: {anonymizer.prompt!r}", flush=True)
     print("[identity_server] ready", flush=True)
 
-    def generate(crop_path: str, seed: int):
+    def generate(crop_path: str, seed: int, box=None, tag=None):
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
 
-        face_detector = DetectorFactory.create_face_detector(FaceDetectorModule.YOLO)
-        face_detections = face_detector.detect(image)
-        if len(face_detections) == 0:
-            return None  # legitimate "no face" — this project's own caller
-                         # falls back to passthrough and retries next frame
-        face_bbox = face_detections[0].left_top_right_bottom
+        if box is not None:
+            # Caller's own detection (see module docstring). BLANKET's own
+            # FaceDetection object, built directly — its constructor only
+            # rounds the box to int32; no source change involved.
+            face_detection = FaceDetection(np.asarray(box, dtype=np.float64), confidence=1.0)
+        else:
+            face_detector = DetectorFactory.create_face_detector(FaceDetectorModule.YOLO)
+            face_detections = face_detector.detect(image)
+            del face_detector
+            if len(face_detections) == 0:
+                return None  # legitimate "no face" — this project's own caller
+                             # falls back to passthrough and retries next frame
+            face_detection = face_detections[0]
+        face_bbox = face_detection.left_top_right_bottom
 
         landmarks_detector = DetectorFactory.create_facial_landmarks_detector(FacialLandmarksDetectorModule.SPIGA)
-        landmarks_detection = landmarks_detector.detect(image, face_detections[0])
+        landmarks_detection = landmarks_detector.detect(image, face_detection)
         face_landmarks = landmarks_detection.landmarks
 
-        del face_detector, landmarks_detector
+        del landmarks_detector
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -216,7 +234,8 @@ def main() -> None:
         # code a resolution it doesn't handle correctly.
         native_w = anonymizer.config.get("width", 896)
         native_h = anonymizer.config.get("height", 896)
-        mask_path = output_dir / f"identity_{seed}_mask.png"
+        stem = f"identity_{seed}_{tag}" if tag else f"identity_{seed}"
+        mask_path = output_dir / f"{stem}_mask.png"
         synthetic_image = anonymizer.generate(
             image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
             output_size=(native_w, native_h), save_mask_path=str(mask_path),
@@ -264,7 +283,7 @@ def main() -> None:
                     fallback[mask_bool] = synthetic_bgr[mask_bool]
                     synthetic_image = Image.fromarray(cv2.cvtColor(fallback, cv2.COLOR_BGR2RGB))
 
-        identity_path = output_dir / f"identity_{seed}.jpg"
+        identity_path = output_dir / f"{stem}.jpg"
         synthetic_image.save(identity_path)
         return str(identity_path)
 
