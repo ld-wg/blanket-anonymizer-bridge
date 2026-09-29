@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import json
 import os
 import random
 import sys
@@ -56,6 +57,7 @@ def main() -> None:
     parser.add_argument("--images", required=True, help="glob of images containing faces")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--insightface-onnx", default=os.path.expanduser("~/.insightface/models/buffalo_l/w600k_r50.onnx"))
+    parser.add_argument("--json", default=None, help="also write the numbers to this JSON file")
     args = parser.parse_args()
 
     import cv2
@@ -117,12 +119,28 @@ def main() -> None:
         emap_cos.append(float(e_ff @ projected / (np.linalg.norm(e_ff) * np.linalg.norm(projected))))
 
     gram = emap.T @ emap
+    orth = float(np.linalg.norm(gram - np.eye(gram.shape[0])) / np.sqrt(gram.shape[0]))
+    sv = np.linalg.svd(emap, compute_uv=False)
     print(f"faces used              {len(same_model_cos)}")
     print(f"cos(facefusion, insightface) on identical crops: {_stats(same_model_cos)}")
-    print(f"emap: ||E^T E - I||_F / sqrt(512) = {np.linalg.norm(gram - np.eye(gram.shape[0])) / np.sqrt(gram.shape[0]):.4f}"
-          f"   singular values min={np.linalg.svd(emap, compute_uv=False).min():.4f}"
-          f" max={np.linalg.svd(emap, compute_uv=False).max():.4f}")
+    print(f"emap: ||E^T E - I||_F / sqrt(512) = {orth:.4f}   singular values min={sv.min():.4f} max={sv.max():.4f}")
     print(f"cos(e, e·E) over real embeddings: {_stats(emap_cos)}")
+
+    if args.json:
+        def summary(values):
+            v = np.asarray(values, dtype=np.float64)
+            return {"n": int(v.size), "mean": float(v.mean()), "min": float(v.min()),
+                    "median": float(np.median(v)), "max": float(v.max())}
+
+        Path(args.json).write_text(json.dumps({
+            "faces": len(same_model_cos),
+            "facefusion_recognizer_sha256": _sha256(ff_model),
+            "insightface_w600k_r50_sha256": _sha256(Path(args.insightface_onnx)),
+            "recognizer_equivalence_cos": summary(same_model_cos),
+            "emap_orthogonality": orth,
+            "emap_singular_values": {"min": float(sv.min()), "max": float(sv.max())},
+            "emap_direction_cos": summary(emap_cos),
+        }, indent=2))
 
 
 if __name__ == "__main__":
