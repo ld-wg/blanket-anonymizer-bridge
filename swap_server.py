@@ -58,6 +58,32 @@ project's contribution step P2):
 `push` is biometric data (an estimate of a real person's face identity):
 it is used in memory for one call and never logged or written.
 
+`swap_with_reason` also takes the target face from the caller's own
+detector instead of FaceFusion's (the calling project's recall work,
+2026-09-30):
+
+    "box": [x1, y1, x2, y2] | null         (crop coordinates)
+    "landmarks5": [[x, y] x 5] | null      (eyes, nose, mouth corners)
+
+With both, the target face is built by FaceFusion's own
+`face_analyser.create_faces()` from that box and those points (its own
+2dfan4 landmarker, recognizer and classifier still run), then swapped and
+enhanced by the same processors, in the same order, as BLANKET's
+`anonymize()`. BLANKET's per-frame `yolo_face` re-detection and its IoU
+filter are skipped: the caller's detector already found the face and its
+tracker already provides continuity. Measured on the caller's
+video-demo-3.mov: `yolo_face` at 0.5 missed 1417 of 4726 faces the
+caller's SCRFD had found (bowed heads, small faces), plus 38 IoU
+rejections. Without `box`, the original flow runs unchanged.
+
+`--lenient-identity` (server flag): when `yolo_face` at 0.5 finds no face
+in an identity image, retry once with FaceFusion's `many` detector
+(retinaface + scrfd + yolo_face) at score 0.25, angle 0 only, and take the
+highest-scoring face, the same choice as BLANKET's `source_faces[0]`.
+Measured: the rejected identities are small (58–269 px). `many` at 0.25
+found the subject's face in all 13 identities rejected on
+video-demo-3.mov. Only the identity image gets the lenient detector.
+
 `check_identity` lets the caller try another candidate crop right after
 generating an unusable identity, instead of discovering it at the first
 swap and passing the whole track through.
@@ -80,9 +106,11 @@ cpu]` already prioritizes GPU correctly.
 **`detections` is intentionally never populated** — verified directly
 against `FaceFusionDirectAnonymizer.anonymize()`'s real source that this
 parameter is dead code, never read in the method body. Per-frame face
-redetection always happens internally via FaceFusion's own `yolo_face`;
-substituting this project's own Phase 1 detections there would require
-patching BLANKET's source, which this integration deliberately does not do.
+redetection always happens internally via FaceFusion's own `yolo_face`.
+The `box`/`landmarks5` path above therefore does not go through
+`anonymize()` at all; it calls the same FaceFusion functions and BLANKET's
+own processor settings from this server, so BLANKET's source stays
+unpatched.
 """
 
 from __future__ import annotations
@@ -116,6 +144,8 @@ def main() -> None:
     parser.add_argument("--socket", required=True)
     parser.add_argument("--face-detector-score", type=float, default=None,
                         help="override BLANKET's face_detector_score (0.5) in a copy of its YAML")
+    parser.add_argument("--lenient-identity", action="store_true",
+                        help="retry identity images yolo_face rejects with FaceFusion's 'many' detector at 0.25")
     args = parser.parse_args()
 
     import cv2
@@ -123,7 +153,10 @@ def main() -> None:
     import yaml
 
     from blanket.anonymization.methods.facefusion import FaceFusionDirectAnonymizer
-    from facefusion import state_manager
+    from facefusion import face_analyser, face_detector, state_manager
+    from facefusion.face_store import clear_static_faces
+    from facefusion.processors.modules.face_enhancer import core as face_enhancer
+    from facefusion.processors.modules.face_swapper import core as face_swapper
 
     output_dir = _HERE / "output" / "swapped"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -162,22 +195,46 @@ def main() -> None:
         if identity_path in _anonymizers:
             return _anonymizers[identity_path]  # real anonymizer, or False
         print(f"[swap_server] loading FaceFusionDirectAnonymizer for {identity_path}...", flush=True)
+        # Built in two steps so that, when __init__ stops at "No face detected
+        # in source" (its last statement), the instance keeps everything it
+        # already set up and --lenient-identity can supply the source face.
+        anonymizer = FaceFusionDirectAnonymizer.__new__(FaceFusionDirectAnonymizer)
         try:
-            anonymizer = FaceFusionDirectAnonymizer(
-                synthetic_face_path=identity_path, config_path=str(config_path),
-            )
+            anonymizer.__init__(synthetic_face_path=identity_path, config_path=str(config_path))
         except ValueError as e:
             # Real, confirmed case (2026-09-24): FaceFusionDirectAnonymizer's
             # own __init__ raises this when its face_analyser finds zero
             # faces in the identity image itself — see module docstring.
-            if "No face detected in source" in str(e):
+            if "No face detected in source" not in str(e):
+                raise
+            source_face = _lenient_source_face(identity_path) if args.lenient_identity else None
+            if source_face is None:
                 print(f"[swap_server] no usable face in identity image {identity_path} "
                       "-- this track will passthrough for its whole duration", flush=True)
                 _anonymizers[identity_path] = False
                 return False
-            raise
+            print(f"[swap_server] identity {identity_path}: face found by the lenient detector", flush=True)
+            anonymizer.source_faces = [source_face]
+            anonymizer.source_face = source_face
         _anonymizers[identity_path] = anonymizer
         return anonymizer
+
+    def _lenient_source_face(identity_path: str):
+        """The highest-scoring face FaceFusion's `many` detector finds at 0.25,
+        angle 0 only; FaceFusion state is restored afterwards."""
+        saved = {k: state_manager.get_item(k)
+                 for k in ("face_detector_model", "face_detector_score", "face_detector_angles")}
+        try:
+            state_manager.init_item("face_detector_model", "many")
+            state_manager.init_item("face_detector_score", 0.25)
+            state_manager.init_item("face_detector_angles", [0])
+            face_detector.pre_check()
+            faces = face_analyser.get_many_faces([cv2.imread(identity_path)])
+        finally:
+            for k, v in saved.items():
+                state_manager.init_item(k, v)
+            clear_static_faces()
+        return faces[0] if faces else None
 
     def check_identity(identity_path: str) -> bool:
         return _get_anonymizer(identity_path) is not False
@@ -210,7 +267,31 @@ def main() -> None:
     def swap(identity_path: str, crop_path: str):
         return swap_with_reason(identity_path, crop_path)["path"]
 
-    def swap_with_reason(identity_path: str, crop_path: str, mode: str = "native", push=None, beta: float = 0.0):
+    def _swap_given_face(anonymizer, image, box, landmarks5):
+        """BLANKET's anonymize() for one face the caller already found: the
+        target face from FaceFusion's own create_faces(), then the same
+        processors in the same order. Score 1.0: the caller's detector
+        already accepted this face, and create_faces() only uses the score
+        to pass its NMS step."""
+        faces = face_analyser.create_faces(image, [np.asarray(box, dtype=np.float32)], [1.0],
+                                           [np.asarray(landmarks5, dtype=np.float32)])
+        if not faces:
+            raise RuntimeError("No faces detected")
+        target_face = faces[0]
+        result_frame = face_swapper.swap_face(source_face=anonymizer.source_face, target_face=target_face,
+                                              temp_vision_frame=image.copy())
+        if anonymizer.enable_expression_restorer:
+            from facefusion.processors.modules.expression_restorer import core as expression_restorer
+            result_frame = expression_restorer.restore_expression(
+                target_face=target_face, target_vision_frame=result_frame, temp_vision_frame=result_frame)
+        if anonymizer.enable_face_enhancer:
+            result_frame = face_enhancer.enhance_face(target_face=target_face, temp_vision_frame=result_frame)
+        if np.array_equal(result_frame, image):
+            raise RuntimeError("FaceFusion returned unchanged image")
+        return result_frame
+
+    def swap_with_reason(identity_path: str, crop_path: str, mode: str = "native", push=None, beta: float = 0.0,
+                         box=None, landmarks5=None):
         anonymizer = _get_anonymizer(identity_path)
         if anonymizer is False:
             return {"path": None, "reason": "identity_unusable"}
@@ -219,7 +300,10 @@ def main() -> None:
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
         try:
-            result_frame, _bboxes = anonymizer.anonymize(image, detections=[])
+            if box is not None and landmarks5 is not None:
+                result_frame = _swap_given_face(anonymizer, image, box, landmarks5)
+            else:
+                result_frame, _bboxes = anonymizer.anonymize(image, detections=[])
         except RuntimeError as e:
             # Both confirmed real on video-demo-2.mov (2026-09-24), both
             # legitimate per-frame "nothing to swap here" outcomes in

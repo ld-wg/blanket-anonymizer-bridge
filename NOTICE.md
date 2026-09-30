@@ -166,6 +166,42 @@ already ran before the check that raises this) — the affected track
 passes through unmodified for its whole duration, same contract as any
 other "no usable face" case.
 
+### Follow-up (2026-09-30): the rejected identities are small, and a lenient detector finds them
+
+Measured on the calling project's `video-demo-3.mov`:
+- 13 of 32 tracks had no usable identity after three seed candidates each.
+- Their identity images are 58–269 px, and `yolo_face` at 0.5 finds nothing
+  in them.
+- FaceFusion's own `many` detector at 0.25, angle 0 only, found the
+  subject's face in all 13.
+- Where it found more than one face, the highest-scoring one was the
+  subject. The largest one was sometimes a neighbour cut at the crop's edge.
+
+`swap_server.py --lenient-identity` retries with that detector, for identity
+images only, and takes the highest-scoring face, the same choice as BLANKET's
+`source_faces[0]`.
+
+## Deliberate deviation (2026-09-30): the target face comes from the caller's detector
+
+**What BLANKET does.** `FaceFusionDirectAnonymizer.anonymize()` re-detects
+the target face in every crop with `yolo_face` at 0.5, then applies its IoU
+continuity filter.
+
+**What went wrong.** On the calling project's `video-demo-3.mov`, that
+re-detection missed 1417 of the 4726 faces the project's own SCRFD-10GF had
+already found, mostly bowed heads and small faces. The IoU filter rejected
+38 more. Each miss left the real face in the output.
+
+**What changed.** `swap_with_reason` now accepts `box` and `landmarks5`, the
+caller's detection in crop coordinates. With them, the target face is built
+by FaceFusion's own `face_analyser.create_faces()`, and FaceFusion's own
+2dfan4 landmarker, recognizer and classifier still run. Then come BLANKET's
+own processors in `anonymize()`'s order: swap, expression restorer if
+enabled, enhancer if enabled.
+
+**What stays the same.** BLANKET's source is not patched: the functions are
+called from this server. Without `box`, the original flow runs unchanged.
+
 ## Deliberate deviation from BLANKET's own prompt: dropped "baby" (2026-09-24)
 
 BLANKET's own real prompt (`stable_diffusion_parameters.yaml`) is
