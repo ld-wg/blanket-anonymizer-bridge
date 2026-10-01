@@ -104,6 +104,8 @@ def main() -> None:
                              "explicitly) — pass BLANKET's original wording here to A/B against it")
     parser.add_argument("--negative-prompt", default=None,
                         help="default: BLANKET's own real negative_prompt, unchanged")
+    parser.add_argument("--p1", action="store_true",
+                        help="load the P1 face guidance (p1_guidance.py): generate() then accepts `guidance`")
     args = parser.parse_args()
 
     # Everything heavy is imported lazily, inside main(), so `--help` and
@@ -180,9 +182,16 @@ def main() -> None:
     if args.negative_prompt is not None:
         anonymizer.negative_prompt = args.negative_prompt
     print(f"[identity_server] prompt: {anonymizer.prompt!r}", flush=True)
+    guidance = None
+    if args.p1:
+        from p1_guidance import FaceGuidance
+
+        anonymizer._load_pipeline()  # lazy in BLANKET; the guidance wraps its scheduler
+        guidance = FaceGuidance(anonymizer._pipeline, device="cuda" if torch.cuda.is_available() else "cpu")
+        print("[identity_server] P1 face guidance loaded", flush=True)
     print("[identity_server] ready", flush=True)
 
-    def generate(crop_path: str, seed: int, box=None, tag=None):
+    def generate(crop_path: str, seed: int, box=None, tag=None, guidance_args=None):
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
@@ -236,10 +245,22 @@ def main() -> None:
         native_h = anonymizer.config.get("height", 896)
         stem = f"identity_{seed}_{tag}" if tag else f"identity_{seed}"
         mask_path = output_dir / f"{stem}_mask.png"
-        synthetic_image = anonymizer.generate(
-            image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
-            output_size=(native_w, native_h), save_mask_path=str(mask_path),
-        )
+        if guidance_args is not None:
+            # P1: the crop's 5 points mapped to the generation canvas (BLANKET
+            # resizes the crop to output_size); e_real is used in memory only.
+            if guidance is None:
+                raise RuntimeError("guidance_args given but the server was started without --p1")
+            lm = np.asarray(guidance_args["landmarks5"], np.float64) * [native_w / orig_w, native_h / orig_h]
+            guidance.set(guidance_args["e_real"], lm, (native_w, native_h), float(guidance_args["scale"]),
+                         float(guidance_args["tau"]), int(guidance_args["window"]))
+        try:
+            synthetic_image = anonymizer.generate(
+                image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
+                output_size=(native_w, native_h), save_mask_path=str(mask_path),
+            )
+        finally:
+            if guidance is not None and guidance.state is not None:
+                print(f"[identity_server] P1 seed {seed}: guided-step cos {guidance.clear()}", flush=True)
         synthetic_image = synthetic_image.resize((orig_w, orig_h), Image.LANCZOS)
         if mask_path.is_file():
             mask_native = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
