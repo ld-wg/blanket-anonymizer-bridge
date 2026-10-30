@@ -398,7 +398,7 @@ def main() -> None:
 
         _counter["n"] += 1
         out_path = output_dir / f"swapped_{_counter['n']:08d}.png"
-        cv2.imwrite(str(out_path), result_frame)
+        cv2.imwrite(str(out_path), result_frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])   # read once by the caller
         return {"path": str(out_path), "reason": None}
 
     serve(args.socket, {"swap": swap, "swap_with_reason": swap_with_reason, "check_identity": check_identity})
