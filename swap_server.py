@@ -88,6 +88,19 @@ video-demo-3.mov. Only the identity image gets the lenient detector.
 generating an unusable identity, instead of discovering it at the first
 swap and passing the whole track through.
 
+`identity_box` (optional, on `check_identity` and `swap_with_reason`; added
+2026-10-30): the box, in identity-image coordinates, of the face the
+identity server inpainted. The identity image is the caller's context crop
+(margin 0.8 of the face box on each side), so it can also hold real,
+untouched faces of neighbours. BLANKET takes `source_faces[0]`, the
+highest-scoring face, which is not guaranteed to be the inpainted one: a
+sharper, larger neighbour would become the swap source, i.e. a real
+classmate's identity. With `identity_box`, the source is the detected face
+that overlaps it most (IoU), and an identity whose faces all miss it
+(IoU < 0.3) is unusable. `check_identity` then also reports which face was
+chosen, so the caller can count how often it was not `source_faces[0]`.
+Without `identity_box`, BLANKET's choice is kept.
+
 **Config: BLANKET's own real, unmodified
 `blanket/configs/module_parameters/facefusion_parameters.yaml` is used
 as-is by default.** `--face-detector-score X` is the one override: it
@@ -137,6 +150,25 @@ os.chdir(_BLANKET_ROOT)
 from rpc_server import serve  # noqa: E402
 
 _CONFIG_PATH = _BLANKET_ROOT / "blanket" / "configs" / "module_parameters" / "facefusion_parameters.yaml"
+_MIN_SOURCE_IOU = 0.3
+
+
+def box_iou(a, b) -> float:
+    """IoU of two (x1, y1, x2, y2) boxes."""
+    ix1, iy1, ix2, iy2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def pick_source(boxes, identity_box, min_iou: float = _MIN_SOURCE_IOU):
+    """Index of the face box that overlaps `identity_box` most, or None if none
+    reaches `min_iou`. `boxes` are in detection-score order (index 0 = BLANKET's choice)."""
+    if not boxes:
+        return None
+    ious = [box_iou(b, identity_box) for b in boxes]
+    best = max(range(len(ious)), key=ious.__getitem__)
+    return best if ious[best] >= min_iou else None
 
 
 def main() -> None:
@@ -214,10 +246,31 @@ def main() -> None:
                 _anonymizers[identity_path] = False
                 return False
             print(f"[swap_server] identity {identity_path}: face found by the lenient detector", flush=True)
-            anonymizer.source_faces = [source_face]
-            anonymizer.source_face = source_face
+            anonymizer.source_faces = source_face   # every face, score order (see _lenient_source_face)
+            anonymizer.source_face = source_face[0]
         _anonymizers[identity_path] = anonymizer
         return anonymizer
+
+    # identity_path -> index of the chosen source face in score order (-1: none overlaps)
+    _source_choice: dict[str, int] = {}
+
+    def _select_source(anonymizer, identity_path: str, identity_box) -> bool:
+        """Source face = the detected face that overlaps the inpainted box (see module
+        docstring). False when none does: the identity is unusable."""
+        if identity_box is None:
+            return True
+        if identity_path not in _source_choice:
+            boxes = [f.bounding_box for f in anonymizer.source_faces]
+            idx = pick_source(boxes, identity_box)
+            _source_choice[identity_path] = -1 if idx is None else idx
+            if idx is None or idx != 0:
+                print(f"[swap_server] identity {identity_path}: source face "
+                      f"{'none overlaps the inpainted box' if idx is None else f'#{idx}, not #0'} "
+                      f"({len(boxes)} faces)", flush=True)
+            if idx is not None:
+                anonymizer.source_face = anonymizer.source_faces[idx]
+                _original_faces[identity_path] = anonymizer.source_face
+        return _source_choice[identity_path] >= 0
 
     def _lenient_source_face(identity_path: str):
         """The highest-scoring face FaceFusion's `many` detector finds at 0.25,
@@ -234,10 +287,18 @@ def main() -> None:
             for k, v in saved.items():
                 state_manager.init_item(k, v)
             clear_static_faces()
-        return faces[0] if faces else None
+        return list(faces) if faces else None
 
-    def check_identity(identity_path: str) -> bool:
-        return _get_anonymizer(identity_path) is not False
+    def check_identity(identity_path: str, identity_box=None):
+        """Without identity_box: whether FaceFusion finds a face (bool, as before).
+        With it: {"usable": bool, "source_index": int} (-1 when no face overlaps the box)."""
+        anonymizer = _get_anonymizer(identity_path)
+        if identity_box is None:
+            return anonymizer is not False
+        if anonymizer is False:
+            return {"usable": False, "source_index": -1}
+        usable = _select_source(anonymizer, identity_path, identity_box)
+        return {"usable": usable, "source_index": _source_choice[identity_path]}
 
     # identity_path -> the source face as FaceFusion computed it, before any
     # push replaced its embedding.
@@ -291,10 +352,12 @@ def main() -> None:
         return result_frame
 
     def swap_with_reason(identity_path: str, crop_path: str, mode: str = "native", push=None, beta: float = 0.0,
-                         box=None, landmarks5=None):
+                         box=None, landmarks5=None, identity_box=None):
         anonymizer = _get_anonymizer(identity_path)
         if anonymizer is False:
             return {"path": None, "reason": "identity_unusable"}
+        if not _select_source(anonymizer, identity_path, identity_box):
+            return {"path": None, "reason": "identity_wrong_face"}
         _apply_mode(anonymizer, identity_path, mode, push, beta)
         image = cv2.imread(crop_path)
         if image is None:

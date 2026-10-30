@@ -56,6 +56,7 @@ import argparse
 import gc
 import os
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -104,6 +105,24 @@ def main() -> None:
                              "explicitly) — pass BLANKET's original wording here to A/B against it")
     parser.add_argument("--negative-prompt", default=None,
                         help="default: BLANKET's own real negative_prompt, unchanged")
+    # Speed (2026-10-30). BLANKET's _load_pipeline() and SDRefiner.load() call
+    # enable_sequential_cpu_offload() and enable_attention_slicing(1) on CUDA: every
+    # submodule's weights cross PCIe on every denoising step (UNet ~5 GB + two
+    # ControlNets ~5 GB in fp16, x 7 base steps x CFG, plus the refiner), the slowest
+    # placement diffusers offers. Same weights and dtype in every mode, so the images do
+    # not depend on it beyond floating-point noise; the defaults keep BLANKET's behavior,
+    # the one every exported result used, until a benchmark on the server says otherwise.
+    parser.add_argument("--offload", choices=("sequential", "model", "none"), default="sequential",
+                        help="sequential: BLANKET's (slowest, least memory); model: one model on the "
+                             "GPU at a time (diffusers enable_model_cpu_offload); none: everything "
+                             "resident (~19 GB for base + 2 ControlNets + refiner in fp16)")
+    parser.add_argument("--attention-slicing", choices=("on", "off"), default="on",
+                        help="off: PyTorch 2 scaled-dot-product attention instead of BLANKET's "
+                             "slice-size-1 attention")
+    parser.add_argument("--keep-landmarker", action="store_true",
+                        help="load SPIGA once instead of on every call")
+    parser.add_argument("--openpose-device", default=None,
+                        help="run the OpenPose ControlNet preprocessor on this device (BLANKET: CPU)")
     args = parser.parse_args()
 
     # Everything heavy is imported lazily, inside main(), so `--help` and
@@ -149,6 +168,16 @@ def main() -> None:
     ):
         if not hasattr(_pipeline_cls, "enable_vae_slicing"):
             _pipeline_cls.enable_vae_slicing = lambda self: self.vae.enable_slicing()
+        # --offload / --attention-slicing: BLANKET's two calls replaced on the class, as
+        # above, so its source stays unpatched.
+        if args.offload == "model":
+            _pipeline_cls.enable_sequential_cpu_offload = lambda self, *a, **k: self.enable_model_cpu_offload()
+        elif args.offload == "none":
+            _pipeline_cls.enable_sequential_cpu_offload = lambda self, *a, **k: self.to("cuda")
+        if args.attention_slicing == "off":
+            _pipeline_cls.enable_attention_slicing = lambda self, *a, **k: None
+    print(f"[identity_server] offload={args.offload} attention_slicing={args.attention_slicing} "
+          f"keep_landmarker={args.keep_landmarker} openpose_device={args.openpose_device}", flush=True)
 
     output_dir = _HERE / "output" / "identities"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -182,6 +211,8 @@ def main() -> None:
     print(f"[identity_server] prompt: {anonymizer.prompt!r}", flush=True)
     print("[identity_server] ready", flush=True)
 
+    _warm: dict = {}   # --keep-landmarker / --openpose-device: models kept across calls
+
     def generate(crop_path: str, seed: int, box=None, tag=None):
         image = cv2.imread(crop_path)
         if image is None:
@@ -202,14 +233,28 @@ def main() -> None:
             face_detection = face_detections[0]
         face_bbox = face_detection.left_top_right_bottom
 
-        landmarks_detector = DetectorFactory.create_facial_landmarks_detector(FacialLandmarksDetectorModule.SPIGA)
+        t0 = time.perf_counter()
+        if args.keep_landmarker:
+            if "spiga" not in _warm:
+                _warm["spiga"] = DetectorFactory.create_facial_landmarks_detector(FacialLandmarksDetectorModule.SPIGA)
+            landmarks_detector = _warm["spiga"]
+        else:
+            landmarks_detector = DetectorFactory.create_facial_landmarks_detector(FacialLandmarksDetectorModule.SPIGA)
         landmarks_detection = landmarks_detector.detect(image, face_detection)
         face_landmarks = landmarks_detection.landmarks
 
-        del landmarks_detector
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if not args.keep_landmarker:
+            del landmarks_detector
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        t_landmarks = time.perf_counter() - t0
+        if args.openpose_device and "openpose" not in _warm:
+            anonymizer._load_preprocessors()   # BLANKET's own lazy loader, called early
+            pose = anonymizer._preprocessors.get("openpose")
+            if pose is not None and hasattr(pose.processor, "to"):
+                pose.processor.to(args.openpose_device)
+            _warm["openpose"] = True
 
         orig_h, orig_w = image.shape[:2]
 
@@ -236,10 +281,14 @@ def main() -> None:
         native_h = anonymizer.config.get("height", 896)
         stem = f"identity_{seed}_{tag}" if tag else f"identity_{seed}"
         mask_path = output_dir / f"{stem}_mask.png"
+        t1 = time.perf_counter()
         synthetic_image = anonymizer.generate(
             image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
             output_size=(native_w, native_h), save_mask_path=str(mask_path),
         )
+        # one line per identity, for the benchmark of --offload / --attention-slicing
+        print(f"[identity_server] timing seed={seed}: landmarks {t_landmarks:.2f}s, "
+              f"diffusion (preprocessors + base + refiner) {time.perf_counter() - t1:.2f}s", flush=True)
         synthetic_image = synthetic_image.resize((orig_w, orig_h), Image.LANCZOS)
         if mask_path.is_file():
             mask_native = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)

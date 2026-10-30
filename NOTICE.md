@@ -360,3 +360,17 @@ therefore lives in the swap stage's own embedding space.
 Empty as of repo creation — entries go here once real installs/runs have
 happened on serra1, dated, same discipline as the calling project's own
 NOTICE.md files (a real, tested finding, not a guess).
+
+## 2026-10-30: swap source face and identity-server speed flags
+
+- **Swap source face (`swap_server.py`, `identity_box`).** The identity image is the caller's context crop, with a margin of 0.8 face-widths, so it can hold real, untouched neighbour faces outside the inpainted region.
+  - BLANKET's `FaceFusionDirectAnonymizer` takes `source_faces[0]`, the highest-scoring detection. That is not necessarily the inpainted face, so a real classmate could become the swap source.
+  - With `identity_box`, the source is the face with the largest IoU with the inpainted box. When none reaches IoU 0.3, the identity is unusable (`identity_wrong_face`).
+  - The server logs a choice other than `#0`, and `check_identity` returns the index, so the frequency can be counted. It has not been measured yet: the server was unavailable.
+- **Speed flags (`identity_server.py`).**
+  - `--offload sequential|model|none` and `--attention-slicing on|off` replace, on the pipeline classes, BLANKET's `enable_sequential_cpu_offload()` and `enable_attention_slicing(1)`, the slowest placement diffusers has.
+  - `--keep-landmarker` loads SPIGA once instead of on every call.
+  - `--openpose-device` moves the OpenPose preprocessor off the CPU.
+  - Each identity logs its landmark and diffusion time.
+  - The defaults keep BLANKET's behavior, which every exported result used. Benchmark on the server before changing them.
+- **Branch base.** This branch starts from the public `master` (`d1bc6d1`). It still has to be merged with the three server-only commits (`f376d0b`, `3004a3a`, `16cf02d`), which also change `swap_with_reason`'s signature (`enhance`, `profile`).
