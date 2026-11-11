@@ -374,3 +374,16 @@ NOTICE.md files (a real, tested finding, not a guess).
   - Each identity logs its landmark and diffusion time.
   - The defaults keep BLANKET's behavior, which every exported result used. Benchmark on the server before changing them.
 - **Branch base.** This branch starts from the public `master` (`d1bc6d1`). It still has to be merged with the three server-only commits (`f376d0b`, `3004a3a`, `16cf02d`), which also change `swap_with_reason`'s signature (`enhance`, `profile`).
+
+## 2026-11-11: server-only commits rewritten; P1 merged
+
+serra1, the only machine holding `f376d0b`, `3004a3a` and `16cf02d`, was locked by its admins on 2026-10-21 and never came back. Those three commits never reached GitHub. They are rewritten here from the protocol the calling project's `models/blanket/backend.py` uses, and the `p1-guidance` branch (`a629b46`) is merged in:
+
+- **`last_guidance` (identity server).** Returns the P1 per-step cosines of the last `generate()`, or `null` when it ran unguided.
+- **`enhance` and `profile` (`swap_with_reason`).** The face enhancer can be switched per call. With `profile`, the reply carries the stage timings.
+- **Data protection.**
+  - The identity server deletes BLANKET's inpainting mask once it is used.
+  - It deletes the ControlNet conditioning maps (`controlnet_openpose.png`, `controlnet_canny.png`, both derived from the real face) after every call.
+  - Only the identity image itself remains, and the caller moves it into its cache.
+
+The rewrite is not byte-identical to the lost commits. Results produced with it (the calling project's runs from 2026-11-11 on, on constantine) are therefore not mixed with serra1's.

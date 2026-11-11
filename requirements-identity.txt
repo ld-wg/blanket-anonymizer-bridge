@@ -61,3 +61,6 @@ scipy>=1.10.0
 # below 70 instead, confirmed empirically to still include it (with an
 # expected deprecation warning, harmless).
 setuptools>=65.0.0,<70
+# P1 face guidance (p1_guidance.py): differentiable ArcFace from the calling project's w600k_r50.onnx
+onnx>=1.15
+onnx2torch>=1.5

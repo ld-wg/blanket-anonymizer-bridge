@@ -9,14 +9,21 @@ GPL-3.0 source directly — see this repo's own README/NOTICE.md for why
 that's confined to this repo and never crosses into
 `lose-the-faces-keep-the-lesson`'s own process.
 
-Protocol (see `rpc_server.py`). One op:
+Protocol (see `rpc_server.py`). Two ops:
 
     {"op": "generate", "crop_path": "<path>", "seed": <int>,
-     "box": [l, t, r, b] | null, "tag": "<str>" | null}
+     "box": [l, t, r, b] | null, "tag": "<str>" | null,
+     "guidance_args": {...} | null}   # P1, needs --p1
     -> {"result": "<path to a generated identity image>"}
     -> {"result": null}   # no face found in this particular crop —
                           # legitimate, caller retries on a later frame
     -> {"error": "..."}
+
+    {"op": "last_guidance"}
+    -> {"result": [<cos per guided step>, ...] | null}   # of the last generate()
+
+The mask and ControlNet maps BLANKET writes next to the identity image are
+deleted once used; only the identity image itself is returned.
 
 `box` (optional, crop coordinates): the calling project's own Phase 1
 detection for this crop. When given, BLANKET's YOLO face detector is
@@ -123,6 +130,8 @@ def main() -> None:
                         help="load SPIGA once instead of on every call")
     parser.add_argument("--openpose-device", default=None,
                         help="run the OpenPose ControlNet preprocessor on this device (BLANKET: CPU)")
+    parser.add_argument("--p1", action="store_true",
+                        help="load the P1 face guidance (p1_guidance.py): generate() then accepts `guidance`")
     args = parser.parse_args()
 
     # Everything heavy is imported lazily, inside main(), so `--help` and
@@ -182,6 +191,13 @@ def main() -> None:
     output_dir = _HERE / "output" / "identities"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _delete_debug_maps() -> None:
+        # BLANKET's generate() saves each ControlNet conditioning image next to the
+        # mask (controlnet_<type>.png). The OpenPose and Canny maps are derived from
+        # the real face, so they are deleted as soon as the call ends (LGPD).
+        for debug_map in output_dir.glob("controlnet_*.png"):
+            debug_map.unlink(missing_ok=True)
+
     # StableDiffusionAnonymizer.__init__'s own default config_path (used
     # when config_path=None) is off by one directory level — verified
     # empirically (2026-09-24): it resolves to
@@ -209,11 +225,20 @@ def main() -> None:
     if args.negative_prompt is not None:
         anonymizer.negative_prompt = args.negative_prompt
     print(f"[identity_server] prompt: {anonymizer.prompt!r}", flush=True)
+    guidance = None
+    if args.p1:
+        from p1_guidance import FaceGuidance
+
+        anonymizer._load_pipeline()  # lazy in BLANKET; the guidance wraps its scheduler
+        guidance = FaceGuidance(anonymizer._pipeline, device="cuda" if torch.cuda.is_available() else "cpu")
+        print("[identity_server] P1 face guidance loaded", flush=True)
     print("[identity_server] ready", flush=True)
 
     _warm: dict = {}   # --keep-landmarker / --openpose-device: models kept across calls
+    _last = {"guided_cos": None}   # P1 per-step cosines of the last generate(), for last_guidance
 
-    def generate(crop_path: str, seed: int, box=None, tag=None):
+    def generate(crop_path: str, seed: int, box=None, tag=None, guidance_args=None):
+        _last["guided_cos"] = None
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
@@ -281,11 +306,25 @@ def main() -> None:
         native_h = anonymizer.config.get("height", 896)
         stem = f"identity_{seed}_{tag}" if tag else f"identity_{seed}"
         mask_path = output_dir / f"{stem}_mask.png"
+        if guidance_args is not None:
+            # P1: the crop's 5 points mapped to the generation canvas (BLANKET
+            # resizes the crop to output_size); e_real is used in memory only.
+            if guidance is None:
+                raise RuntimeError("guidance_args given but the server was started without --p1")
+            lm = np.asarray(guidance_args["landmarks5"], np.float64) * [native_w / orig_w, native_h / orig_h]
+            guidance.set(guidance_args["e_real"], lm, (native_w, native_h), float(guidance_args["scale"]),
+                         float(guidance_args["tau"]), int(guidance_args["window"]))
         t1 = time.perf_counter()
-        synthetic_image = anonymizer.generate(
-            image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
-            output_size=(native_w, native_h), save_mask_path=str(mask_path),
-        )
+        try:
+            synthetic_image = anonymizer.generate(
+                image=image, face_bbox=face_bbox, face_landmarks=face_landmarks,
+                output_size=(native_w, native_h), save_mask_path=str(mask_path),
+            )
+        finally:
+            if guidance is not None and guidance.state is not None:
+                _last["guided_cos"] = [float(c) for c in guidance.clear()]
+                print(f"[identity_server] P1 seed {seed}: guided-step cos {_last['guided_cos']}", flush=True)
+            _delete_debug_maps()
         # one line per identity, for the benchmark of --offload / --attention-slicing
         print(f"[identity_server] timing seed={seed}: landmarks {t_landmarks:.2f}s, "
               f"diffusion (preprocessors + base + refiner) {time.perf_counter() - t1:.2f}s", flush=True)
@@ -332,11 +371,17 @@ def main() -> None:
                     fallback[mask_bool] = synthetic_bgr[mask_bool]
                     synthetic_image = Image.fromarray(cv2.cvtColor(fallback, cv2.COLOR_BGR2RGB))
 
+        mask_path.unlink(missing_ok=True)   # used above only; outlines the real face (LGPD)
         identity_path = output_dir / f"{stem}.jpg"
         synthetic_image.save(identity_path)
         return str(identity_path)
 
-    serve(args.socket, {"generate": generate})
+    def last_guidance():
+        """P1 diagnostic: ArcFace cos(predicted clean image, e_real) per guided step of
+        the last generate() (scalars only), or None when it ran unguided."""
+        return _last["guided_cos"]
+
+    serve(args.socket, {"generate": generate, "last_guidance": last_guidance})
 
 
 if __name__ == "__main__":

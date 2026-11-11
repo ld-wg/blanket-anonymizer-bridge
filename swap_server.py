@@ -101,6 +101,16 @@ that overlaps it most (IoU), and an identity whose faces all miss it
 chosen, so the caller can count how often it was not `source_faces[0]`.
 Without `identity_box`, BLANKET's choice is kept.
 
+Two more optional `swap_with_reason` arguments (the caller's cost study):
+
+    "enhance": true | false | null   (default null: BLANKET's enable_face_enhancer)
+    "profile": true | false          (default false)
+
+`enhance` turns the face enhancer (GFPGAN) on or off for that call only.
+With `profile`, the reply also carries `"timing": {stage: seconds}` for
+`create_faces`, `swap_face`, `enhance_face` and `write_png` (the stages on
+the `box`/`landmarks5` path; only `write_png` on BLANKET's own path).
+
 **Config: BLANKET's own real, unmodified
 `blanket/configs/module_parameters/facefusion_parameters.yaml` is used
 as-is by default.** `--face-detector-score X` is the one override: it
@@ -131,6 +141,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -328,31 +339,43 @@ def main() -> None:
     def swap(identity_path: str, crop_path: str):
         return swap_with_reason(identity_path, crop_path)["path"]
 
-    def _swap_given_face(anonymizer, image, box, landmarks5):
+    def _swap_given_face(anonymizer, image, box, landmarks5, enhance=None, timing=None):
         """BLANKET's anonymize() for one face the caller already found: the
         target face from FaceFusion's own create_faces(), then the same
         processors in the same order. Score 1.0: the caller's detector
         already accepted this face, and create_faces() only uses the score
-        to pass its NMS step."""
-        faces = face_analyser.create_faces(image, [np.asarray(box, dtype=np.float32)], [1.0],
-                                           [np.asarray(landmarks5, dtype=np.float32)])
+        to pass its NMS step.
+
+        `enhance` (None = BLANKET's setting) turns the face enhancer on or off for
+        this call only. `timing`, a dict, receives each stage's seconds."""
+        def staged(name, fn, *a, **k):
+            if timing is None:
+                return fn(*a, **k)
+            t0 = time.perf_counter()
+            out = fn(*a, **k)
+            timing[name] = time.perf_counter() - t0
+            return out
+
+        faces = staged("create_faces", face_analyser.create_faces, image, [np.asarray(box, dtype=np.float32)],
+                       [1.0], [np.asarray(landmarks5, dtype=np.float32)])
         if not faces:
             raise RuntimeError("No faces detected")
         target_face = faces[0]
-        result_frame = face_swapper.swap_face(source_face=anonymizer.source_face, target_face=target_face,
-                                              temp_vision_frame=image.copy())
+        result_frame = staged("swap_face", face_swapper.swap_face, source_face=anonymizer.source_face,
+                              target_face=target_face, temp_vision_frame=image.copy())
         if anonymizer.enable_expression_restorer:
             from facefusion.processors.modules.expression_restorer import core as expression_restorer
             result_frame = expression_restorer.restore_expression(
                 target_face=target_face, target_vision_frame=result_frame, temp_vision_frame=result_frame)
-        if anonymizer.enable_face_enhancer:
-            result_frame = face_enhancer.enhance_face(target_face=target_face, temp_vision_frame=result_frame)
+        if anonymizer.enable_face_enhancer if enhance is None else enhance:
+            result_frame = staged("enhance_face", face_enhancer.enhance_face, target_face=target_face,
+                                  temp_vision_frame=result_frame)
         if np.array_equal(result_frame, image):
             raise RuntimeError("FaceFusion returned unchanged image")
         return result_frame
 
     def swap_with_reason(identity_path: str, crop_path: str, mode: str = "native", push=None, beta: float = 0.0,
-                         box=None, landmarks5=None, identity_box=None):
+                         box=None, landmarks5=None, identity_box=None, enhance=None, profile=False):
         anonymizer = _get_anonymizer(identity_path)
         if anonymizer is False:
             return {"path": None, "reason": "identity_unusable"}
@@ -362,11 +385,19 @@ def main() -> None:
         image = cv2.imread(crop_path)
         if image is None:
             raise RuntimeError(f"could not read {crop_path}")
+        timing = {} if profile else None
         try:
             if box is not None and landmarks5 is not None:
-                result_frame = _swap_given_face(anonymizer, image, box, landmarks5)
+                result_frame = _swap_given_face(anonymizer, image, box, landmarks5, enhance, timing)
             else:
-                result_frame, _bboxes = anonymizer.anonymize(image, detections=[])
+                # BLANKET's own path; a per-call enhancer setting is applied around it
+                saved = anonymizer.enable_face_enhancer
+                if enhance is not None:
+                    anonymizer.enable_face_enhancer = bool(enhance)
+                try:
+                    result_frame, _bboxes = anonymizer.anonymize(image, detections=[])
+                finally:
+                    anonymizer.enable_face_enhancer = saved
         except RuntimeError as e:
             # Both confirmed real on video-demo-2.mov (2026-09-24), both
             # legitimate per-frame "nothing to swap here" outcomes in
@@ -398,8 +429,11 @@ def main() -> None:
 
         _counter["n"] += 1
         out_path = output_dir / f"swapped_{_counter['n']:08d}.png"
+        t0 = time.perf_counter()
         cv2.imwrite(str(out_path), result_frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])   # read once by the caller
-        return {"path": str(out_path), "reason": None}
+        if timing is not None:
+            timing["write_png"] = time.perf_counter() - t0
+        return {"path": str(out_path), "reason": None, **({"timing": timing} if timing is not None else {})}
 
     serve(args.socket, {"swap": swap, "swap_with_reason": swap_with_reason, "check_identity": check_identity})
 
