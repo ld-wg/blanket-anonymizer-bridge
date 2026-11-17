@@ -187,6 +187,10 @@ def main() -> None:
     parser.add_argument("--socket", required=True)
     parser.add_argument("--face-detector-score", type=float, default=None,
                         help="override BLANKET's face_detector_score (0.5) in a copy of its YAML")
+    parser.add_argument("--face-swapper-model", default=None,
+                        help="override BLANKET's face_swapper_model (inswapper_128) in a copy of its YAML; "
+                             "BLANKET accepts inswapper_128, simswap_256, blendswap_256, uniface_256 and "
+                             "silently falls back to inswapper_128 for anything else, so the server checks it")
     parser.add_argument("--lenient-identity", action="store_true",
                         help="retry identity images yolo_face rejects with FaceFusion's 'many' detector at 0.25")
     args = parser.parse_args()
@@ -210,9 +214,12 @@ def main() -> None:
             "check the vendor/blanket-infant-face-anonym submodule is initialized."
         )
     config_path = _CONFIG_PATH
-    if args.face_detector_score is not None:
+    if args.face_detector_score is not None or args.face_swapper_model is not None:
         config = yaml.safe_load(_CONFIG_PATH.read_text())
-        config["face_detector_score"] = args.face_detector_score
+        if args.face_detector_score is not None:
+            config["face_detector_score"] = args.face_detector_score
+        if args.face_swapper_model is not None:
+            config["face_swapper_model"] = args.face_swapper_model
         config_path = _HERE / "output" / "facefusion_parameters.override.yaml"
         config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     print(f"[swap_server] FaceFusion config: {config_path}", flush=True)
@@ -259,6 +266,11 @@ def main() -> None:
             print(f"[swap_server] identity {identity_path}: face found by the lenient detector", flush=True)
             anonymizer.source_faces = source_face   # every face, score order (see _lenient_source_face)
             anonymizer.source_face = source_face[0]
+        if args.face_swapper_model is not None:
+            used = state_manager.get_item("face_swapper_model")
+            if used != args.face_swapper_model:
+                raise RuntimeError(f"face swapper {args.face_swapper_model!r} requested, BLANKET set {used!r} "
+                                   "(its whitelist: inswapper_128, simswap_256, blendswap_256, uniface_256)")
         _anonymizers[identity_path] = anonymizer
         return anonymizer
 
